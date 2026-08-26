@@ -43,7 +43,7 @@ export interface AiPerception {
  * training data rather than performing generic analysis. Each model is given
  * explicit permission to differ from other models.
  */
-const PERCEPTION_PROMPT = (modelName: string, brandName: string, url: string, context?: string) => {
+export const buildPerceptionPrompt = (modelName: string, brandName: string, url: string, context?: string) => {
   const contextBlock = context
     ? `\n\nHere is content scraped directly from their website — use this to inform your positioning delta, not your associations (associations should come from your training data, not their marketing copy):\n---\n${context.slice(0, 1500)}\n---\n`
     : "";
@@ -76,7 +76,7 @@ const FALLBACK_ENTRY = (model: string): AiPerceptionEntry => ({
   model,
 });
 
-function parsePerceptionResponse(text: string, model: string): AiPerceptionEntry {
+export function parsePerceptionResponse(text: string, model: string): AiPerceptionEntry {
   try {
     const match = text.match(/\{[\s\S]*\}/);
     const jsonStr = match ? match[0] : text;
@@ -121,7 +121,7 @@ async function queryOpenAI(brandName: string, url: string, context?: string): Pr
       model: chatgptModel,
       max_tokens: 1000,
       temperature: 0.4,
-      messages: [{ role: "user", content: PERCEPTION_PROMPT("ChatGPT", brandName, url, context) }],
+      messages: [{ role: "user", content: buildPerceptionPrompt("ChatGPT", brandName, url, context) }],
     });
     const text = response.choices[0]?.message?.content?.trim() ?? "";
     console.log("[fetchAiPerception] ChatGPT raw response:", text.slice(0, 200));
@@ -154,7 +154,7 @@ async function queryAnthropic(brandName: string, url: string, context?: string):
     const response = await client.messages.create({
       model: claudeModel,
       max_tokens: 1000,
-      messages: [{ role: "user", content: PERCEPTION_PROMPT("Claude", brandName, url, context) }],
+      messages: [{ role: "user", content: buildPerceptionPrompt("Claude", brandName, url, context) }],
     });
     const text =
       response.content[0]?.type === "text" ? response.content[0].text.trim() : "";
@@ -185,7 +185,7 @@ async function queryGemini(brandName: string, url: string, context?: string): Pr
   const geminiModel = "gemini-3.6-flash";
   const geminiEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${apiKey}`;
   const body = {
-    contents: [{ parts: [{ text: PERCEPTION_PROMPT("Gemini", brandName, url, context) }] }],
+    contents: [{ parts: [{ text: buildPerceptionPrompt("Gemini", brandName, url, context) }] }],
     generationConfig: {
       maxOutputTokens: 8192,
       temperature: 0.4,

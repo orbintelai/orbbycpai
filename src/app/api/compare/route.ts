@@ -17,8 +17,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { db } from "@/db";
-import { brands, generations } from "@/db/schema";
-import { eq, desc } from "drizzle-orm";
+import { analysisEvidence, generations } from "@/db/schema";
+import { and, eq, desc } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as os from "os";
@@ -27,6 +27,8 @@ import OpenAI from "openai";
 import { extractDom } from "@/lib/pipeline/runPipeline";
 import { classifyBrand, type BrandProfile } from "@/lib/pipeline/classifyBrand";
 import { fetchAiPerception } from "@/lib/pipeline/fetchAiPerception";
+import { runCompanyIntelligence } from "@/lib/intelligence/runCompanyIntelligence";
+import { AccountLimitError, PlatformCapacityError, completeFullProfileUnit, releaseFullProfileUnit, reserveFullProfileUnit } from "@/lib/usage/circuitBreaker";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -142,48 +144,68 @@ function detectBlockPage(
  * identify the correct company from content, not training data alone.
  * Throws SiteBlockedError if the scraped page is a WAF challenge.
  */
-async function extractFreshProfile(url: string): Promise<BrandProfile> {
+async function extractFreshProfile(input: { url: string; userId: string; email: string; countTowardAccountLimit: boolean }): Promise<BrandProfile> {
+  const normalizedUrl = normalizeUrl(input.url);
+  const reservation = await reserveFullProfileUnit({ userId: input.userId, email: input.email, countTowardAccountLimit: input.countTowardAccountLimit });
   const workDir = path.join(os.tmpdir(), `orb-compare-${randomUUID()}`);
   fs.mkdirSync(workDir, { recursive: true });
+  const startedAt = new Date();
+  let completed = false;
   try {
-    const raw = await extractDom(url, workDir, () => {});
+    const raw = await extractDom(normalizedUrl, workDir, () => {});
     const rawTyped = raw as Record<string, unknown>;
-
-    // Guard: detect WAF / bot-block pages before classifying
     const pageTitle = (rawTyped.title as string | undefined) ?? "";
     const copyText0 = rawTyped.copyText as { h1?: string[] } | undefined;
-    const h1s0 = copyText0?.h1 ?? [];
-    const bodySnippet0 = (rawTyped.bodySnippet as string | undefined) ?? "";
-    detectBlockPage(pageTitle, h1s0, bodySnippet0, url);
+    detectBlockPage(pageTitle, copyText0?.h1 ?? [], (rawTyped.bodySnippet as string | undefined) ?? "", normalizedUrl);
 
-    const downloadedAssets = (rawTyped.downloadedAssets as Array<{
-      src: string; localPath: string; localUrl: string;
-      alt: string; width: number; height: number;
-      ext: string; isGif: boolean; inHero: boolean;
-    }>) ?? [];
-
-    rawTyped.downloadedAssets = downloadedAssets.map((asset) => {
-      const dataUri = fileToDataUri(asset.localPath);
-      return { ...asset, localUrl: dataUri || asset.src };
-    }).filter((a) => a.localUrl);
-
+    const downloadedAssets = (rawTyped.downloadedAssets as Array<{ src: string; localPath: string; localUrl: string; alt: string; width: number; height: number; ext: string; isGif: boolean; inHero: boolean }>) ?? [];
+    rawTyped.downloadedAssets = downloadedAssets.map((asset) => ({ ...asset, localUrl: fileToDataUri(asset.localPath) || asset.src })).filter((asset) => asset.localUrl);
     const profile = await classifyBrand(rawTyped);
-
-    // Build scraped context — same pattern as extract/route.ts
     const copyText = rawTyped.copyText as { h1?: string[]; h2?: string[]; bodyParagraphs?: string[] } | undefined;
     const bodySnippet = (rawTyped.bodySnippet as string | undefined) ?? "";
-    const scrapedContext = [
-      copyText?.h1?.join(" | "),
-      copyText?.h2?.slice(0, 4).join(" | "),
-      copyText?.bodyParagraphs?.slice(0, 3).join(" "),
-      bodySnippet.slice(0, 800),
-    ].filter(Boolean).join("\n").slice(0, 2000);
+    const scrapedContext = [copyText?.h1?.join(" | "), copyText?.h2?.slice(0, 4).join(" | "), copyText?.bodyParagraphs?.slice(0, 3).join(" "), bodySnippet.slice(0, 800)].filter(Boolean).join("\n").slice(0, 2000);
+    const brandName = profile.meta?.brandName || normalizeDomain(normalizedUrl);
+    const [perception, intelligence] = await Promise.all([
+      fetchAiPerception(brandName, normalizedUrl, scrapedContext || undefined),
+      runCompanyIntelligence(normalizedUrl),
+    ]);
+    profile.aiPerception = perception;
+    profile.companyIntelligence = intelligence.intelligence;
 
-    const brandName = profile.meta?.brandName || normalizeDomain(url);
-    profile.aiPerception = await fetchAiPerception(brandName, url, scrapedContext || undefined);
-
+    const domain = normalizeDomain(normalizedUrl);
+    const previous = await db.select({ id: generations.id, snapshotVersion: generations.snapshotVersion })
+      .from(generations)
+      .where(and(eq(generations.userId, input.userId), eq(generations.domain, domain), eq(generations.status, "complete")))
+      .orderBy(desc(generations.snapshotVersion), desc(generations.completedAt)).limit(1);
+    const completedAt = new Date();
+    const [generation] = await db.insert(generations).values({
+      userId: input.userId,
+      brandUrl: normalizedUrl,
+      domain,
+      brandProfile: profile as unknown as Record<string, unknown>,
+      status: "complete",
+      runOrigin: "comparison",
+      snapshotVersion: (previous[0]?.snapshotVersion || 0) + 1,
+      previousGenerationId: previous[0]?.id || null,
+      accessTier: "full",
+      moduleStatuses: intelligence.moduleStatuses,
+      startedAt,
+      completedAt,
+      runtimeMs: completedAt.valueOf() - startedAt.valueOf(),
+    }).returning({ id: generations.id });
+    if (intelligence.evidence.length) await db.insert(analysisEvidence).values(intelligence.evidence.map((item) => ({ ...item, generationId: generation.id })));
+    try {
+      await completeFullProfileUnit({ userId: input.userId, email: input.email, pool: reservation.pool, accountCounted: reservation.accountCounted });
+    } catch (error) {
+      // Snapshot is saved, so retain the consumed unit rather than undercounting.
+      console.error("[compare] capacity finalization failed", error);
+    }
+    completed = true;
     return profile;
   } finally {
+    if (!completed) {
+      try { await releaseFullProfileUnit({ userId: input.userId, email: input.email, pool: reservation.pool, accountCounted: reservation.accountCounted }); } catch (error) { console.error("[compare] capacity release failed", error); }
+    }
     try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
   }
 }
@@ -192,7 +214,7 @@ async function extractFreshProfile(url: string): Promise<BrandProfile> {
  * For competitors: check the generations table for a recent record.
  * Falls back to a fresh extraction if none found or record is stale.
  */
-async function getCompetitorProfile(url: string, forceRefresh: boolean): Promise<BrandProfile> {
+async function getCompetitorProfile(url: string, forceRefresh: boolean, userId: string, email: string): Promise<BrandProfile> {
   const normalized = normalizeUrl(url);
 
   if (!forceRefresh) {
@@ -214,7 +236,7 @@ async function getCompetitorProfile(url: string, forceRefresh: boolean): Promise
   }
 
   console.log(`[compare] Running fresh extraction for competitor: ${normalized}`);
-  return extractFreshProfile(normalized);
+  return extractFreshProfile({ url: normalized, userId, email, countTowardAccountLimit: false });
 }
 
 // ─── Competitive Position prompt ─────────────────────────────────────────────
@@ -315,7 +337,8 @@ Return ONLY this JSON object — no markdown, no explanation, no code fences:
 export async function POST(req: NextRequest) {
   const session = await auth();
   const userId = (session?.user as { id?: string } | undefined)?.id;
-  if (!userId) {
+  const email = (session?.user as { email?: string } | undefined)?.email?.toLowerCase() || "";
+  if (!userId || !email) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -336,7 +359,7 @@ export async function POST(req: NextRequest) {
 
   try {
     // Primary: always fresh (no cache)
-    const primaryProfile = await extractFreshProfile(normalizeUrl(primaryUrl));
+    const primaryProfile = await extractFreshProfile({ url: normalizeUrl(primaryUrl), userId, email, countTowardAccountLimit: true });
 
     // Competitors: 7-day cache from generations, unless forceRefresh.
     // SiteBlockedError is caught per-competitor — blocked URLs are skipped
@@ -345,7 +368,7 @@ export async function POST(req: NextRequest) {
     const competitorResults = await Promise.all(
       competitorUrls.map(async (url) => {
         try {
-          return await getCompetitorProfile(url, forceRefresh);
+          return await getCompetitorProfile(url, forceRefresh, userId, email);
         } catch (err) {
           if (err instanceof SiteBlockedError) {
             const domain = normalizeDomain(url);
@@ -380,6 +403,7 @@ export async function POST(req: NextRequest) {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[compare] Error:", message);
+    if (err instanceof AccountLimitError || err instanceof PlatformCapacityError) return NextResponse.json({ error: message, code: err instanceof AccountLimitError ? "monthly_report_limit_reached" : "beta_capacity_paused" }, { status: 429 });
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

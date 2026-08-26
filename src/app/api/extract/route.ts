@@ -1,28 +1,8 @@
-/**
- * POST /api/extract
- *
- * Accepts { url: string } in the request body.
- * Runs the full brand intelligence pipeline with freemium enforcement:
- *
- *   Free tier (no paid plan):
- *     Run 1:    Full report — Brand Report + AI Perception (all 3 models)
- *     Runs 2-5: Partial report — Brand Report only (AI Perception skipped)
- *     Run 6+:   Blocked — returns 402 with upgrade prompt
- *
- *   Paid tiers: Unlimited full reports
- *
- * Streams progress events via SSE.
- *
- * Event types:
- *   { type: "status",   step: number, total: number, message: string }
- *   { type: "complete", generationId: string, brandProfile: BrandProfile, accessTier: "full" | "partial" }
- *   { type: "error",    message: string }
- */
 import { NextRequest } from "next/server";
 import { auth } from "@/auth";
 import { db } from "@/db";
-import { generations, subscriptions } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { analysisEvidence, generations } from "@/db/schema";
+import { and, desc, eq } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as os from "os";
@@ -30,217 +10,223 @@ import * as path from "path";
 import { extractDom } from "@/lib/pipeline/runPipeline";
 import { classifyBrand } from "@/lib/pipeline/classifyBrand";
 import { fetchAiPerception } from "@/lib/pipeline/fetchAiPerception";
+import { runCompanyIntelligence } from "@/lib/intelligence/runCompanyIntelligence";
+import type { CompanyIntelligence, IntelligenceRunResult } from "@/lib/intelligence/types";
+import {
+  AccountLimitError,
+  PlatformCapacityError,
+  completeFullProfileUnit,
+  releaseFullProfileUnit,
+  reserveFullProfileUnit,
+} from "@/lib/usage/circuitBreaker";
 
 export const runtime = "nodejs";
-export const maxDuration = 180;
-
-// ─── Free tier limits ─────────────────────────────────────────────────────────
-const FREE_FULL_RUNS = 1;   // First run: full report including AI Perception
-const FREE_TOTAL_RUNS = 5;  // Runs 2-5: partial (Brand Report only). Run 6+: blocked.
-
-// ─── Admin accounts — always full access, no limits ──────────────────────────
-const ADMIN_EMAILS = ["tyler@yanaapp.com"];
+export const maxDuration = 240;
 
 function sse(data: object): string {
   return `data: ${JSON.stringify(data)}\n\n`;
 }
 
-// Convert a local image file to a base64 data URI so it survives workDir cleanup
+function normalizeInputUrl(value: string): string {
+  const normalized = value.startsWith("http") ? value : `https://${value}`;
+  const url = new URL(normalized);
+  url.hash = "";
+  return url.toString();
+}
+
+function domainFor(value: string): string {
+  return new URL(value).hostname.replace(/^www\./i, "").toLowerCase();
+}
+
+function emptyIntelligence(reason: string): IntelligenceRunResult {
+  const startedAt = Date.now();
+  const unavailable = { status: "unavailable" as const, reason, crawledUrls: [], durationMs: 0 };
+  const moduleStatuses: CompanyIntelligence["moduleStatuses"] = {
+    people: { ...unavailable },
+    news: { ...unavailable },
+    hiring: { ...unavailable },
+    compliance: { ...unavailable },
+    integrations: { ...unavailable },
+    productPricing: { ...unavailable },
+  };
+  return {
+    intelligence: {
+      version: "v1",
+      sourcePolicy: "first_party_only",
+      generatedAt: new Date().toISOString(),
+      moduleStatuses,
+    },
+    evidence: [],
+    moduleStatuses,
+    durationMs: Date.now() - startedAt,
+  };
+}
+
 function fileToDataUri(filePath: string): string | null {
   try {
     if (!fs.existsSync(filePath)) return null;
-    const buf = fs.readFileSync(filePath);
-    if (buf.length < 1000) return null; // skip empty/corrupt files
-    const ext = path.extname(filePath).toLowerCase().replace(".", "");
-    const mimeMap: Record<string, string> = {
-      jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
-      gif: "image/gif", webp: "image/webp", svg: "image/svg+xml",
-    };
-    const mime = mimeMap[ext] || "image/jpeg";
-    // Cap at 500KB per image to keep the DB row manageable
-    if (buf.length > 512 * 1024) return null;
-    return `data:${mime};base64,${buf.toString("base64")}`;
+    const buffer = fs.readFileSync(filePath);
+    if (buffer.length < 1000 || buffer.length > 512 * 1024) return null;
+    const extension = path.extname(filePath).toLowerCase().replace(".", "");
+    const mime = ({ jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml" } as Record<string, string>)[extension] || "image/jpeg";
+    return `data:${mime};base64,${buffer.toString("base64")}`;
   } catch {
     return null;
   }
 }
 
-/** Get or create a subscription row for the user. Returns the current usage state. */
-async function getUserSubscription(userId: string) {
-  const existing = await db
-    .select()
-    .from(subscriptions)
-    .where(eq(subscriptions.userId, userId))
-    .limit(1);
-
-  if (existing.length > 0) return existing[0];
-
-  // First time — create a free subscription row
-  const [created] = await db
-    .insert(subscriptions)
-    .values({
-      userId,
-      tier: "free",
-      status: "active",
-      generationsUsed: 0,
-      generationsLimit: FREE_TOTAL_RUNS,
-    })
-    .returning();
-  return created;
-}
-
+/**
+ * POST /api/extract
+ *
+ * A fresh direct report is a capacity-reserved, immutable snapshot. First-party
+ * modules run in parallel with the three-model perception call after the initial
+ * rendered homepage capture completes. Existing snapshots are never overwritten.
+ */
 export async function POST(req: NextRequest) {
   const session = await auth();
   const userId = (session?.user as { id?: string } | undefined)?.id;
-  if (!userId) {
-    return new Response(JSON.stringify({ error: "Unauthorized" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" },
-    });
+  const userEmail = (session?.user as { email?: string } | undefined)?.email?.toLowerCase() || "";
+  if (!userId || !userEmail) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   let body: { url?: string };
   try {
     body = await req.json();
   } catch {
-    return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const rawUrl = (body.url ?? "").trim();
-  if (!rawUrl) {
-    return new Response(JSON.stringify({ error: "url is required" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
+  const rawUrl = (body.url || "").trim();
+  if (!rawUrl) return Response.json({ error: "url is required" }, { status: 400 });
+
+  let normalizedUrl: string;
   try {
-    new URL(rawUrl.startsWith("http") ? rawUrl : `https://${rawUrl}`);
+    normalizedUrl = normalizeInputUrl(rawUrl);
   } catch {
-    return new Response(JSON.stringify({ error: "Invalid URL" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
+    return Response.json({ error: "Invalid URL" }, { status: 400 });
   }
 
-  // ─── Freemium check ───────────────────────────────────────────────────────
-  const userEmail = (session?.user as { email?: string } | undefined)?.email ?? "";
-  const isAdmin = ADMIN_EMAILS.includes(userEmail.toLowerCase());
-
-  const sub = await getUserSubscription(userId);
-  const isPaid = isAdmin || sub.tier !== "free";
-  const runsUsed = sub.generationsUsed ?? 0;
-
-  // Admin and paid users: unlimited. Free users: block at run 6+
-  if (!isPaid && runsUsed >= FREE_TOTAL_RUNS) {
-    return new Response(
-      JSON.stringify({
-        error: "upgrade_required",
-        message: `You've used all ${FREE_TOTAL_RUNS} free analyses. Upgrade to Starter for unlimited full reports.`,
-        runsUsed,
-        limit: FREE_TOTAL_RUNS,
-      }),
-      { status: 402, headers: { "Content-Type": "application/json" } }
-    );
+  let reservation: Awaited<ReturnType<typeof reserveFullProfileUnit>>;
+  try {
+    reservation = await reserveFullProfileUnit({ userId, email: userEmail });
+  } catch (error) {
+    if (error instanceof AccountLimitError) {
+      return Response.json({ error: "monthly_report_limit_reached", message: error.message, limit: 10 }, { status: 429 });
+    }
+    if (error instanceof PlatformCapacityError) {
+      return Response.json({ error: "beta_capacity_paused", message: error.message }, { status: 429 });
+    }
+    console.error("[extract] capacity reservation failed", error);
+    return Response.json({ error: "capacity_check_failed", message: "Orb could not reserve analysis capacity. Please retry." }, { status: 503 });
   }
 
-  // Determine access tier for this run
-  // Admin/paid: always full. Free run 1: full. Free runs 2-5: partial.
-  const accessTier: "full" | "partial" =
-    isPaid || runsUsed < FREE_FULL_RUNS ? "full" : "partial";
-
-  const normalizedUrl = rawUrl.startsWith("http") ? rawUrl : `https://${rawUrl}`;
   const workDir = path.join(os.tmpdir(), `orb-extract-${randomUUID()}`);
   fs.mkdirSync(workDir, { recursive: true });
-
+  const startedAt = new Date();
+  const domain = domainFor(normalizedUrl);
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
-      const emit = (data: object) => {
-        controller.enqueue(encoder.encode(sse(data)));
-      };
-
+      const emit = (data: object) => controller.enqueue(encoder.encode(sse(data)));
+      let completed = false;
       try {
-        // Steps 1-5: DOM extraction
+        emit({ type: "status", step: 1, total: 9, message: "Reading the company homepage..." });
         const raw = await extractDom(normalizedUrl, workDir, emit);
-
         const rawTyped = raw as Record<string, unknown>;
-        const downloadedAssets = (rawTyped.downloadedAssets as Array<{
-          src: string;
-          localPath: string;
-          localUrl: string;
-          alt: string;
-          width: number;
-          height: number;
-          ext: string;
-          isGif: boolean;
-          inHero: boolean;
-        }>) ?? [];
+        const downloadedAssets = (rawTyped.downloadedAssets as Array<{ src: string; localPath: string; localUrl: string; alt: string; width: number; height: number; ext: string; isGif: boolean; inHero: boolean }>) || [];
+        rawTyped.downloadedAssets = downloadedAssets
+          .map((asset) => ({ ...asset, localUrl: fileToDataUri(asset.localPath) || asset.src }))
+          .filter((asset) => asset.localUrl);
 
-        const resolvedAssets = downloadedAssets.map((asset) => {
-          const dataUri = fileToDataUri(asset.localPath);
-          return { ...asset, localUrl: dataUri || asset.src };
-        }).filter((a) => a.localUrl);
-
-        rawTyped.downloadedAssets = resolvedAssets;
-
-        // Step 6: Brand classification
-        const totalSteps = accessTier === "full" ? 8 : 7;
-        emit({ type: "status", step: 6, total: totalSteps, message: "Classifying brand identity and archetype..." });
+        emit({ type: "status", step: 6, total: 9, message: "Classifying company identity..." });
         const profile = await classifyBrand(rawTyped);
+        const brandName = profile.meta?.brandName || domain;
+        const copyText = rawTyped.copyText as { h1?: string[]; h2?: string[]; bodyParagraphs?: string[] } | undefined;
+        const bodySnippet = (rawTyped.bodySnippet as string | undefined) || "";
+        const scrapedContext = [
+          copyText?.h1?.join(" | "),
+          copyText?.h2?.slice(0, 4).join(" | "),
+          copyText?.bodyParagraphs?.slice(0, 3).join(" "),
+          bodySnippet.slice(0, 800),
+        ].filter(Boolean).join("\n").slice(0, 2000);
 
-        // Step 7: AI Perception (full tier only)
-        if (accessTier === "full") {
-          emit({ type: "status", step: 7, total: 8, message: "Querying AI models for brand perception..." });
-          const brandName = profile.meta?.brandName || new URL(normalizedUrl).hostname;
-          const copyText = rawTyped.copyText as { h1?: string[]; h2?: string[]; bodyParagraphs?: string[] } | undefined;
-          const bodySnippet = (rawTyped.bodySnippet as string | undefined) ?? "";
-          const scrapedContext = [
-            copyText?.h1?.join(" | "),
-            copyText?.h2?.slice(0, 4).join(" | "),
-            copyText?.bodyParagraphs?.slice(0, 3).join(" "),
-            bodySnippet.slice(0, 800),
-          ].filter(Boolean).join("\n").slice(0, 2000);
-          const aiPerception = await fetchAiPerception(brandName, normalizedUrl, scrapedContext || undefined);
-          profile.aiPerception = aiPerception;
-        } else {
-          // Partial tier: mark AI perception as locked so the UI can show the gate
-          profile.aiPerception = undefined;
-        }
+        // These two branches are intentionally parallel: model perception is
+        // model-labelled analysis; company intelligence is first-party extraction.
+        emit({ type: "status", step: 7, total: 9, message: "Collecting first-party company signals and AI perception..." });
+        const [aiPerception, intelligenceResult] = await Promise.all([
+          fetchAiPerception(brandName, normalizedUrl, scrapedContext || undefined),
+          runCompanyIntelligence(normalizedUrl).catch((error) => {
+            console.error("[extract] company intelligence branch failed", error);
+            return emptyIntelligence("Source-backed intelligence could not be collected for this run.");
+          }),
+        ]);
+        profile.aiPerception = aiPerception;
+        profile.companyIntelligence = intelligenceResult.intelligence;
 
-        // Step 7 (partial) / Step 8 (full): Save to database
-        emit({ type: "status", step: totalSteps, total: totalSteps, message: "Saving intelligence report..." });
-
+        emit({ type: "status", step: 8, total: 9, message: "Creating immutable intelligence snapshot..." });
+        const previous = await db
+          .select({ id: generations.id, snapshotVersion: generations.snapshotVersion })
+          .from(generations)
+          .where(and(eq(generations.domain, domain), eq(generations.status, "complete"), eq(generations.userId, userId)))
+          .orderBy(desc(generations.snapshotVersion), desc(generations.completedAt))
+          .limit(1);
+        const snapshotVersion = (previous[0]?.snapshotVersion || 0) + 1;
+        const completedAt = new Date();
         const [generation] = await db
           .insert(generations)
           .values({
             userId,
             brandUrl: normalizedUrl,
+            domain,
             brandProfile: profile as unknown as Record<string, unknown>,
             status: "complete",
+            runOrigin: "direct",
+            snapshotVersion,
+            previousGenerationId: previous[0]?.id || null,
+            accessTier: "full",
+            moduleStatuses: intelligenceResult.moduleStatuses,
+            startedAt,
+            completedAt,
+            runtimeMs: completedAt.valueOf() - startedAt.valueOf(),
           })
           .returning({ id: generations.id });
 
-        // Increment usage counter
-        await db
-          .update(subscriptions)
-          .set({ generationsUsed: runsUsed + 1, updatedAt: new Date() })
-          .where(eq(subscriptions.userId, userId));
+        if (intelligenceResult.evidence.length > 0) {
+          await db.insert(analysisEvidence).values(intelligenceResult.evidence.map((item) => ({ ...item, generationId: generation.id })));
+        }
 
+        let capacity = reservation.snapshot;
+        try {
+          capacity = await completeFullProfileUnit({ userId, email: userEmail, pool: reservation.pool });
+        } catch (error) {
+          // The report is already durably saved. Keep the reservation consumed
+          // rather than undercounting capacity if dashboard telemetry is delayed.
+          console.error("[extract] failed to finalize capacity telemetry", error);
+        }
+        completed = true;
+        emit({ type: "status", step: 9, total: 9, message: "Report ready." });
         emit({
           type: "complete",
           generationId: generation.id,
           brandProfile: profile,
-          accessTier,
-          runsUsed: runsUsed + 1,
-          runsRemaining: isPaid ? null : Math.max(0, FREE_TOTAL_RUNS - (runsUsed + 1)),
+          accessTier: "full",
+          snapshotVersion,
+          capacity,
+          runtimeMs: completedAt.valueOf() - startedAt.valueOf(),
         });
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error("[extract] pipeline failed", error);
         emit({ type: "error", message });
       } finally {
+        if (!completed) {
+          try {
+            await releaseFullProfileUnit({ userId, email: userEmail, pool: reservation.pool });
+          } catch (error) {
+            console.error("[extract] failed to release capacity reservation", error);
+          }
+        }
         try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
         controller.close();
       }

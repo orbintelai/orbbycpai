@@ -118,13 +118,17 @@ export const brands = pgTable(
   })
 );
 
-// ─── Generations ─────────────────────────────────────────────────────────────
+// ─── Generations / immutable company snapshots ───────────────────────────────
+// Every completed direct analysis or fresh comparison analysis is immutable.
+// `brandProfile` remains for backwards compatibility; source-backed intelligence
+// lives in `brandProfile.companyIntelligence` and is backed by analysisEvidence.
 export const generations = pgTable(
   "generations",
   {
     id: uuid("id").defaultRandom().primaryKey(),
     userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     brandUrl: text("brand_url").notNull(),
+    domain: text("domain"),
     instagramUrl: text("instagram_url"),
     brandId: uuid("brand_id").references(() => brands.id, { onDelete: "set null" }),
     brandProfile: json("brand_profile"),
@@ -134,6 +138,14 @@ export const generations = pgTable(
     paid: boolean("paid").notNull().default(false),
     stripePaymentIntentId: text("stripe_payment_intent_id"),
     downloadUrl: text("download_url"),
+    runOrigin: text("run_origin").notNull().default("direct"),
+    snapshotVersion: integer("snapshot_version"),
+    previousGenerationId: uuid("previous_generation_id"),
+    accessTier: text("access_tier"),
+    moduleStatuses: jsonb("module_statuses"),
+    startedAt: timestamp("started_at", { mode: "date" }),
+    completedAt: timestamp("completed_at", { mode: "date" }),
+    runtimeMs: integer("runtime_ms"),
     createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { mode: "date" }).defaultNow().notNull(),
   },
@@ -141,7 +153,73 @@ export const generations = pgTable(
     userIdx: index("generations_user_id_idx").on(table.userId),
     statusIdx: index("generations_status_idx").on(table.status),
     createdIdx: index("generations_created_at_idx").on(table.createdAt),
+    domainCompletedIdx: index("generations_domain_completed_idx").on(table.domain, table.completedAt),
+    domainVersionIdx: unique("generations_domain_snapshot_version_unique").on(table.domain, table.snapshotVersion),
   })
+);
+
+// ─── First-party evidence records ────────────────────────────────────────────
+// One row per factual claim or source-backed item. Model analysis intentionally
+// does not use this table because it is labelled with its model source instead.
+export const analysisEvidence = pgTable(
+  "analysis_evidence",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    generationId: uuid("generation_id").notNull().references(() => generations.id, { onDelete: "cascade" }),
+    module: text("module").notNull(),
+    entityType: text("entity_type").notNull(),
+    entityKey: text("entity_key").notNull(),
+    fieldPath: text("field_path").notNull(),
+    sourceUrl: text("source_url").notNull(),
+    sourcePageTitle: text("source_page_title").notNull(),
+    excerpt: text("excerpt").notNull(),
+    capturedAt: timestamp("captured_at", { mode: "date" }).notNull(),
+    contentHash: text("content_hash").notNull(),
+    createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
+  },
+  (table) => ({
+    generationModuleIdx: index("analysis_evidence_generation_module_idx").on(table.generationId, table.module),
+    sourceUrlIdx: index("analysis_evidence_source_url_idx").on(table.sourceUrl),
+  })
+);
+
+// ─── Calendar-month account usage ────────────────────────────────────────────
+export const userUsagePeriods = pgTable(
+  "user_usage_periods",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    calendarMonth: text("calendar_month").notNull(),
+    reservedRuns: integer("reserved_runs").notNull().default(0),
+    completedRuns: integer("completed_runs").notNull().default(0),
+    releasedRuns: integer("released_runs").notNull().default(0),
+    createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { mode: "date" }).defaultNow().notNull(),
+  },
+  (table) => ({
+    userMonthIdx: unique("user_usage_periods_user_month_unique").on(table.userId, table.calendarMonth),
+  })
+);
+
+// ─── Calendar-month platform capacity ────────────────────────────────────────
+// Shared units are available to all users; admin reserve units are only available
+// to the configured owner account after shared capacity is exhausted.
+export const platformUsagePeriods = pgTable(
+  "platform_usage_periods",
+  {
+    calendarMonth: text("calendar_month").primaryKey(),
+    sharedReservedRuns: integer("shared_reserved_runs").notNull().default(0),
+    adminReservedRuns: integer("admin_reserved_runs").notNull().default(0),
+    sharedCompletedRuns: integer("shared_completed_runs").notNull().default(0),
+    adminCompletedRuns: integer("admin_completed_runs").notNull().default(0),
+    sharedReleasedRuns: integer("shared_released_runs").notNull().default(0),
+    adminReleasedRuns: integer("admin_released_runs").notNull().default(0),
+    isPaused: boolean("is_paused").notNull().default(false),
+    alertedAt50: boolean("alerted_at_50").notNull().default(false),
+    alertedAt80: boolean("alerted_at_80").notNull().default(false),
+    createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { mode: "date" }).defaultNow().notNull(),
+  }
 );
 
 // ─── Competitor Comparisons ─────────────────────────────────────────────────

@@ -50,14 +50,14 @@ export default function BrandExtractionPanel() {
   const handleAnalyze = async () => {
     if (!url.trim()) return;
     setStep("loading");
-    setStatusMsg("Scraping brand assets...");
+    setStatusMsg("Reading the live company site...");
     setTeaserProfile(null);
     setErrorMsg("");
 
     const normalized = url.startsWith("http") ? url : `https://${url}`;
 
     // Rotate status messages while loading
-    const msgs = ["Scraping brand assets...", "Classifying brand identity...", "Detecting archetype..."];
+    const msgs = ["Reading the live company site...", "Classifying company signals...", "Preparing your preview..."];
     let msgIdx = 0;
     const msgTimer = setInterval(() => {
       msgIdx = (msgIdx + 1) % msgs.length;
@@ -76,7 +76,7 @@ export default function BrandExtractionPanel() {
 
       if (!res.ok) {
         if (res.status === 429) {
-          setErrorMsg("Rate limit reached. Sign up for unlimited access.");
+          setErrorMsg("Preview capacity is temporarily full. Create an account for beta access.");
         } else {
           setErrorMsg(data.error || "Analysis failed. Please try again.");
         }
@@ -142,7 +142,7 @@ export default function BrandExtractionPanel() {
             whiteSpace: "nowrap",
           }}
         >
-          {step === "loading" ? "Analyzing..." : "Analyze brand →"}
+          {step === "loading" ? "Analyzing..." : "Analyze company →"}
         </button>
       </div>
 
@@ -330,10 +330,10 @@ export default function BrandExtractionPanel() {
           }}>
             <div>
               <div style={{ fontSize: 13, fontWeight: 500, color: "rgba(255,255,255,0.7)" }}>
-                Unlock the full company profile
+                Create your beta account
               </div>
               <div style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", marginTop: 2 }}>
-                AI perception from GPT, Claude & Gemini · Competitor comparison · Positioning intelligence
+                Ten full company profiles per calendar month · AI Perception · Competitor Comparison · Source-backed evidence
               </div>
             </div>
             <Link
@@ -354,7 +354,7 @@ export default function BrandExtractionPanel() {
                 boxShadow: "0 0 16px rgba(0,212,170,0.35)",
               }}
             >
-              Get full access →
+              Get started free →
             </Link>
           </div>
         </div>
@@ -362,7 +362,7 @@ export default function BrandExtractionPanel() {
 
       {step === "idle" && (
         <p style={{ margin: "10px 0 0", fontSize: 12, color: "var(--text-tertiary)", textAlign: "center" }}>
-          Free to try · No credit card required
+          Free while in beta · Ten full company profiles per calendar month · No credit card
         </p>
       )}
     </div>

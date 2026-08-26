@@ -15,6 +15,13 @@
       "when": 1774571040107,
       "tag": "0001_ambiguous_blazing_skull",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787773372149,
+      "tag": "0002_company_intelligence_foundation",
+      "breakpoints": true
     }
   ]
 }

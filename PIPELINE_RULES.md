@@ -221,3 +221,55 @@ The Image Director was previously guessing from alt text and URL patterns. For D
 `abedf3f` (rankHeroAssets + classifyBrand + compositorAgents), `6e57146` (runPipeline color quantization)
 
 ---
+
+
+---
+
+## 16. Company Intelligence Evidence and Source Policy
+
+### Rule
+Every factual Company Intelligence claim must be sourced from a **first-party company page** and persist an evidence record containing the source URL, page title, direct excerpt, capture timestamp, module, entity key, and content hash. Each report item exposes its evidence in the UI and export.
+
+### Explicit exception
+AI Perception and Competitive Position are model analysis, not first-party claims. They must remain clearly labeled with the contributing model(s) and must never be presented as verified company-site facts.
+
+### Why
+A credibility product cannot make sourced and model-derived claims look equivalent. Evidence is captured during extraction, rather than retrofitted, because deterministic citations and snapshot diffs depend on it.
+
+---
+
+## 17. Immutable Company Snapshots and What Changed
+
+### Rule
+Every fresh profile run appends a new generation/snapshot. It must never overwrite or delete an earlier completed snapshot. `What Changed` compares the current snapshot with the immediately prior completed snapshot for the same canonical domain and only reports deterministic, source-backed additions, removals, or changed values.
+
+### Why
+Historical reports are the basis for trust and explainability. A cache is an optimization; it is not a substitute for an immutable evidence ledger.
+
+---
+
+## 18. Capacity, Entitlement, and Admin Reserve
+
+### Rule
+Normal beta accounts receive **10 full reports per UTC calendar month**. `tyler@yanaapp.com` bypasses that personal limit. The platform maintains a monthly shared pool of **300 fresh full-profile units** plus a **20-unit admin-only reserve**. Normal accounts can never consume the reserve; the admin account draws from it only after shared capacity is exhausted. The hard maximum is 320 fresh profile units per month.
+
+The application reserves **$0.05 per fresh full-profile unit** against the platform cost envelope. Dashboard-only notices appear at 50% and 80% aggregate capacity. No transactional-email provider is in scope.
+
+### Why
+Per-account quotas prevent one visitor from consuming the beta. The shared ceiling protects aggregate spend. The separate admin reserve ensures external traffic cannot lock the owner out of a daily-use tool.
+
+---
+
+## 19. Competitor Comparison Persistence
+
+### Rule
+A completed comparison persists per primary company until the user submits a new competitor set. Tab switches and page refreshes must not discard the result. This behavior is independent of snapshot caching and must not be changed by Company Intelligence work.
+
+---
+
+## 20. Staging, Premium-Model Evaluation, and Production Safety
+
+### Rule
+The Company Intelligence release is built and migrated on an isolated staging branch and database. Production remains unchanged until the owner personally QA-tests three companies and explicitly approves cutover.
+
+During the three staging tests, run one company's AI Perception through a larger model from each provider in an evaluation-only path. Capture cost and qualitative differences in Positioning Delta and Category Anchor. Do not alter the production model mix without a separate owner decision.

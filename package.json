@@ -19,6 +19,7 @@
     "@stripe/stripe-js": "^8.9.0",
     "@vercel/blob": "^2.3.1",
     "bcryptjs": "^3.0.3",
+    "cheerio": "1.1.2",
     "drizzle-orm": "^0.45.1",
     "next": "16.1.6",
     "next-auth": "5.0.0-beta.30",

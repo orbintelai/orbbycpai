@@ -7,6 +7,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import * as fs from "fs";
 import { rankHeroAssets, RankedAsset } from "./rankHeroAssets";
+import type { CompanyIntelligence } from "@/lib/intelligence/types";
 const CLASSIFICATION_MODEL = "claude-haiku-4-5-20251001";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -131,6 +132,7 @@ export interface BrandProfile {
     anthropic: { dominantAssociations?: string[]; vocabularyTells?: string; positioningDelta?: string; categoryAnchor?: string; sentimentRationale?: string; summary?: string; sentimentScore: number; model: string };
     google: { dominantAssociations?: string[]; vocabularyTells?: string; positioningDelta?: string; categoryAnchor?: string; sentimentRationale?: string; summary?: string; sentimentScore: number; model: string };
   };
+  companyIntelligence?: CompanyIntelligence;
   companyMetadata?: {
     foundedYear: string | null;
     employeeCount: string | null;

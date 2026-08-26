@@ -2,6 +2,8 @@
 import React, { useState, useRef } from "react";
 import { signOut } from "next-auth/react";
 import Image from "next/image";
+import { CompanyIntelligencePanel, WhatChangedPanel } from "./CompanyIntelligencePanel";
+import type { CompanyIntelligence } from "@/lib/intelligence/types";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -42,6 +44,7 @@ interface BrandProfile {
   shapeLanguage?: { classification: string };
   spatialPhilosophy?: { classification: string };
   aiPerception?: AiPerception;
+  companyIntelligence?: CompanyIntelligence;
   companyMetadata?: { foundedYear?: string | null; employeeCount?: string | null; hqLocation?: string | null; fundingStage?: string | null };
   productIntelligence?: {
     productName?: string; oneLiner?: string; whatItDoes?: string;
@@ -79,7 +82,8 @@ interface ComparisonResult {
 }
 
 interface User { name: string; email: string; initials: string }
-interface Stats { completedRuns: number; totalGenerations: number; generationsUsed: number; generationsLimit: number; tier: string }
+interface CapacitySummary { sharedUsed: number; sharedLimit: number; adminReserveUsed: number; adminReserveLimit: number; totalUsed: number; totalLimit: number; estimatedReservedCostUsd: number; dashboardAlert?: "50" | "80" }
+interface Stats { completedRuns: number; totalGenerations: number; generationsUsed: number; generationsLimit: number; tier: string; capacity?: CapacitySummary | null }
 interface Props { user: User; generations: Generation[]; stats: Stats }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -165,7 +169,7 @@ function Card({ children, style }: { children: React.ReactNode; style?: React.CS
 
 // ─── Brand Report Tab ─────────────────────────────────────────────────────────
 
-function BrandReportTab({ profile }: { profile: BrandProfile }) {
+function BrandReportTab({ profile, generationId }: { profile: BrandProfile; generationId: string }) {
   const pi = profile.productIntelligence;
   const archetype = profile.brandArchetype;
   const meta = profile.companyMetadata;
@@ -375,6 +379,7 @@ function BrandReportTab({ profile }: { profile: BrandProfile }) {
           </div>
         </Card>
       )}
+      <CompanyIntelligencePanel profile={profile} generationId={generationId} />
     </div>
   );
 }
@@ -784,7 +789,7 @@ function UpgradeGate({ feature }: { feature: string }) {
   );
 }
 
-function NewAnalysisPanel({ onComplete, runsUsed, runsLimit, tier }: { onComplete: (generationId: string, profile: BrandProfile, accessTier: string) => void; runsUsed: number; runsLimit: number; tier: string }) {
+function NewAnalysisPanel({ onComplete, runsUsed, runsLimit, tier }: { onComplete: (generationId: string, profile: BrandProfile, accessTier: string, capacity?: CapacitySummary) => void; runsUsed: number; runsLimit: number; tier: string }) {
   const [url, setUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [statusMsg, setStatusMsg] = useState("");
@@ -806,14 +811,8 @@ function NewAnalysisPanel({ onComplete, runsUsed, runsLimit, tier }: { onComplet
     });
 
     if (!res.ok || !res.body) {
-      // Handle upgrade_required (402)
-      if (res.status === 402) {
-        const errData = await res.json().catch(() => ({}));
-        setError(errData.message || "You've used all your free analyses. Upgrade to continue.");
-        setIsLoading(false);
-        return;
-      }
-      setError("Failed to start analysis.");
+      const errData = await res.json().catch(() => ({}));
+      setError(errData.message || "Unable to start this analysis. Please try again.");
       setIsLoading(false);
       return;
     }
@@ -837,7 +836,7 @@ function NewAnalysisPanel({ onComplete, runsUsed, runsLimit, tier }: { onComplet
             if (event.type === "complete") {
               setIsLoading(false);
               setUrl("");
-              onComplete(event.generationId, event.brandProfile, event.accessTier || "full");
+              onComplete(event.generationId, event.brandProfile, event.accessTier || "full", event.capacity);
               return;
             }
             if (event.type === "error") {
@@ -865,29 +864,15 @@ function NewAnalysisPanel({ onComplete, runsUsed, runsLimit, tier }: { onComplet
       padding: "16px 20px",
       marginBottom: 20,
     }}>
-      {/* Usage indicator */}
-      {tier === "free" && (
+      {/* Beta entitlement indicator. Admins have an independent protected reserve. */}
+      {tier !== "admin" && (
         <div style={{ marginBottom: 12, padding: "8px 10px", background: "rgba(255,255,255,0.03)", borderRadius: 6, border: "1px solid rgba(255,255,255,0.06)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-            <span style={{ fontSize: 10, color: "rgba(255,255,255,0.3)" }}>FREE TIER</span>
-            <span style={{ fontSize: 10, color: runsUsed >= runsLimit ? "rgba(255,100,100,0.7)" : "rgba(255,255,255,0.3)" }}>
-              {runsUsed}/{runsLimit} analyses used
-            </span>
+            <span style={{ fontSize: 10, color: "rgba(255,255,255,0.3)" }}>BETA ACCESS</span>
+            <span style={{ fontSize: 10, color: runsUsed >= runsLimit ? "rgba(255,100,100,0.7)" : "rgba(255,255,255,0.3)" }}>{runsUsed}/{runsLimit} full reports this month</span>
           </div>
-          <div style={{ height: 3, background: "rgba(255,255,255,0.06)", borderRadius: 2 }}>
-            <div style={{
-              height: "100%",
-              width: `${Math.min(100, (runsUsed / runsLimit) * 100)}%`,
-              background: runsUsed >= runsLimit ? "rgba(255,100,100,0.6)" : "#00d4aa",
-              borderRadius: 2,
-              transition: "width 0.3s",
-            }} />
-          </div>
-          {runsUsed >= runsLimit && (
-            <div style={{ marginTop: 6, fontSize: 10, color: "rgba(255,100,100,0.7)" }}>
-              Upgrade to continue analyzing →
-            </div>
-          )}
+          <div style={{ height: 3, background: "rgba(255,255,255,0.06)", borderRadius: 2 }}><div style={{ height: "100%", width: `${Math.min(100, (runsUsed / runsLimit) * 100)}%`, background: runsUsed >= runsLimit ? "rgba(255,100,100,0.6)" : "#00d4aa", borderRadius: 2, transition: "width 0.3s" }} /></div>
+          {runsUsed >= runsLimit && <div style={{ marginTop: 6, fontSize: 10, color: "rgba(255,100,100,0.7)" }}>Your monthly beta report allowance has been used.</div>}
         </div>
       )}
       <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(0,212,170,0.7)", marginBottom: 10, letterSpacing: "0.04em" }}>
@@ -950,16 +935,17 @@ const ADMIN_EMAILS = ["tyler@yanaapp.com"];
 export default function DashboardClient({ user, generations: initialGenerations, stats }: Props) {
   const [generations, setGenerations] = useState(initialGenerations);
   const [selectedId, setSelectedId] = useState<string | null>(initialGenerations[0]?.id ?? null);
-  const [activeTab, setActiveTab] = useState<"report" | "perception" | "comparison">("report");
+  const [activeTab, setActiveTab] = useState<"report" | "perception" | "comparison" | "changes">("report");
   const [runsUsed, setRunsUsed] = useState(stats.generationsUsed);
+  const [capacity, setCapacity] = useState(stats.capacity);
   const isAdmin = ADMIN_EMAILS.includes((user.email ?? "").toLowerCase());
 
   const selectedGen = generations.find(g => g.id === selectedId);
   const selectedProfile = selectedGen?.brandProfile as BrandProfile | undefined;
   // Determine if the selected report has full AI perception data
   const selectedHasPerception = !!(selectedProfile?.aiPerception &&
-    selectedProfile.aiPerception.openai?.summary &&
-    selectedProfile.aiPerception.anthropic?.summary);
+    ((selectedProfile.aiPerception.openai?.dominantAssociations?.length || 0) > 0 || Boolean(selectedProfile.aiPerception.openai?.vocabularyTells)) &&
+    ((selectedProfile.aiPerception.anthropic?.dominantAssociations?.length || 0) > 0 || Boolean(selectedProfile.aiPerception.anthropic?.vocabularyTells)));
 
   // Re-run the analysis for the currently selected generation's URL
   const handleRerun = async () => {
@@ -996,7 +982,7 @@ export default function DashboardClient({ user, generations: initialGenerations,
     processChunk().catch(() => {});
   };
 
-  const handleNewAnalysis = (generationId: string, profile: BrandProfile, accessTier: string) => {
+  const handleNewAnalysis = (generationId: string, profile: BrandProfile, accessTier: string, nextCapacity?: CapacitySummary) => {
     const newGen: Generation = {
       id: generationId,
       brandUrl: profile.meta?.url || "",
@@ -1008,6 +994,7 @@ export default function DashboardClient({ user, generations: initialGenerations,
     setGenerations(prev => [newGen, ...prev]);
     setSelectedId(generationId);
     setRunsUsed(prev => prev + 1);
+    if (nextCapacity) setCapacity(nextCapacity);
     // For full access runs, go to perception tab to show off the feature
     setActiveTab(accessTier === "full" ? "perception" : "report");
   };
@@ -1035,6 +1022,12 @@ export default function DashboardClient({ user, generations: initialGenerations,
         </div>
       </nav>
 
+      {/* Owner-only, non-dismissible platform-capacity notice. */}
+      {isAdmin && capacity && capacity.totalUsed / capacity.totalLimit >= 0.5 && (
+        <div style={{ maxWidth: 1280, width: "calc(100% - 48px)", margin: "18px auto 0", padding: "11px 14px", border: `1px solid ${capacity.totalUsed / capacity.totalLimit >= 0.8 ? "rgba(243,181,98,0.48)" : "rgba(80,227,194,0.30)"}`, borderRadius: 9, background: capacity.totalUsed / capacity.totalLimit >= 0.8 ? "rgba(243,181,98,0.09)" : "rgba(80,227,194,0.07)", color: "rgba(255,255,255,0.72)", fontSize: 12 }}>
+          <strong style={{ color: capacity.totalUsed / capacity.totalLimit >= 0.8 ? "#f3b562" : "#50e3c2" }}>Beta capacity {Math.round((capacity.totalUsed / capacity.totalLimit) * 100)}% used.</strong> {capacity.totalUsed}/{capacity.totalLimit} fresh profile units reserved this month · estimated incremental processing envelope ${capacity.estimatedReservedCostUsd.toFixed(2)}. Your protected admin reserve has {Math.max(0, capacity.adminReserveLimit - capacity.adminReserveUsed)} units remaining.
+        </div>
+      )}
       {/* Body */}
       <div style={{ flex: 1, maxWidth: 1280, margin: "0 auto", width: "100%", padding: "24px", display: "grid", gridTemplateColumns: "260px 1fr", gap: 20 }}>
         {/* Sidebar */}
@@ -1138,7 +1131,7 @@ export default function DashboardClient({ user, generations: initialGenerations,
 
               {/* Tabs */}
               <div style={{ display: "flex", gap: 4, marginBottom: 20, borderBottom: "1px solid rgba(255,255,255,0.07)", paddingBottom: 0 }}>
-                {(["report", "perception", "comparison"] as const).map(tab => (
+                {(["report", "perception", "comparison", "changes"] as const).map(tab => (
                   <button
                     key={tab}
                     onClick={() => setActiveTab(tab)}
@@ -1153,23 +1146,16 @@ export default function DashboardClient({ user, generations: initialGenerations,
                       marginBottom: -1,
                     }}
                   >
-                    {tab === "report" ? "Brand Report" : tab === "perception" ? "AI Perception" : "Competitor Comparison"}
+                    {tab === "report" ? "Brand Report" : tab === "perception" ? "AI Perception" : tab === "comparison" ? "Competitor Comparison" : "What Changed"}
                   </button>
                 ))}
               </div>
 
               {/* Tab content */}
-              {activeTab === "report" && <BrandReportTab profile={selectedProfile} />}
-              {activeTab === "perception" && (
-                selectedHasPerception
-                  ? <AiPerceptionTab perception={selectedProfile!.aiPerception} onRerun={handleRerun} />
-                  : isAdmin ? <AiPerceptionTab perception={selectedProfile?.aiPerception} onRerun={handleRerun} /> : <UpgradeGate feature="AI Perception" />
-              )}
-              {activeTab === "comparison" && (
-                selectedHasPerception
-                  ? <ComparisonTab primaryProfile={selectedProfile!} />
-                  : isAdmin ? <ComparisonTab primaryProfile={selectedProfile!} /> : <UpgradeGate feature="Competitor Comparison" />
-              )}
+              {activeTab === "report" && <BrandReportTab profile={selectedProfile} generationId={selectedGen!.id} />}
+              {activeTab === "perception" && <AiPerceptionTab perception={selectedProfile?.aiPerception} onRerun={handleRerun} />}
+              {activeTab === "comparison" && <ComparisonTab primaryProfile={selectedProfile!} />}
+              {activeTab === "changes" && <WhatChangedPanel generationId={selectedGen!.id} />}
             </>
           )}
         </div>

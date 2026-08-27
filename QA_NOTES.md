@@ -27,3 +27,11 @@
 2. Apply migration `0002_company_intelligence_foundation.sql` only to staging.
 3. Verify authenticated full run, evidence write, snapshot diff, 10-report quota, platform reserve, comparison persistence, and WAF skip behavior.
 4. Run three owner-selected staging URLs, then execute one premium-model evaluation run after verifying model IDs from each provider API.
+
+## Environment-access findings
+
+The sandbox browser did not hold an authenticated Neon session and displayed the Neon sign-in page. Project-level Neon access was subsequently enabled and used through the database integration instead. A separate `company-intelligence-staging` branch was created from production; its connection string has been retrieved for user delivery but has not been configured in Railway or written into the repository.
+
+The Railway token supplied for staging provisioning was tested against the official GraphQL endpoint as both an account/workspace Bearer token and a project token. It returned `Not Authorized` and `Project Token not found`, respectively. No Railway mutation has been attempted.
+
+The Railway browser session is also unauthenticated: the new-service route resolves to the public Railway site and presents a Sign in control. The supplied Railway token was rejected by the documented account/workspace and project-token authentication paths, so no service or variable mutation can be safely issued through Railway at this time.

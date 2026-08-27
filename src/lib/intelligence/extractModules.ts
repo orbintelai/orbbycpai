@@ -47,7 +47,9 @@ function evidence(
     sourcePageTitle: page.title || new URL(page.url).hostname,
     excerpt: compact,
     capturedAt: page.discoveredAt,
-    contentHash: sourceHash(`${page.url}|${fieldPath}|${compact}`),
+    // The evidence row retains its source URL; its content hash identifies the
+    // published claim itself so the same fact can be collapsed across subpages.
+    contentHash: sourceHash(compact),
   };
   return {
     draft,
@@ -254,21 +256,36 @@ export async function extractHiring(manifest: SourceManifest): Promise<ModuleRes
 
 export function extractCompliance(manifest: SourceManifest): ModuleResult<ComplianceClaim[]> {
   const startedAt = Date.now();
-  const claims: ComplianceClaim[] = [];
+  const claims = new Map<string, ComplianceClaim>();
   const evidenceDrafts: EvidenceDraft[] = [];
-  const seen = new Set<string>();
+  const seenEvidence = new Set<string>();
   for (const page of relevantPages(manifest, "compliance")) {
     for (const framework of COMPLIANCE_FRAMEWORKS) {
-      const sentence = sentenceContaining(page.text, new RegExp(`\\b${framework.replace(/ /g, "\\s+")}\\b`, "i"));
-      const key = `${framework}|${page.url}`;
-      if (!sentence || seen.has(key)) continue;
-      seen.add(key);
+      const frameworkPattern = framework.split(/\s+/).join("\\s+");
+      const sentence = sentenceContaining(page.text, new RegExp(`\\b${frameworkPattern}\\b`, "i"));
+      if (!sentence) continue;
       const ref = evidence("compliance", "claim", framework.toLowerCase(), "compliance.claims", page, sentence);
-      evidenceDrafts.push(ref.draft);
-      claims.push({ framework, claim: textExcerpt(sentence, 300), evidence: [ref.reference] });
+      // One company fact per framework / field path. A company may publish the
+      // same certification on several trust subpages; those are supporting
+      // sources, not separate SOC 2, HIPAA, or GDPR claims.
+      const claimKey = `${ref.draft.entityKey}|${ref.draft.fieldPath}`;
+      const existing = claims.get(claimKey);
+      const evidenceKey = `${ref.draft.sourceUrl}|${ref.draft.contentHash}`;
+      if (!seenEvidence.has(evidenceKey)) {
+        evidenceDrafts.push(ref.draft);
+        seenEvidence.add(evidenceKey);
+      }
+      if (existing) {
+        if (!existing.evidence.some((item) => item.sourceUrl === ref.reference.sourceUrl && item.excerpt === ref.reference.excerpt)) {
+          existing.evidence.push(ref.reference);
+        }
+        continue;
+      }
+      claims.set(claimKey, { framework, claim: textExcerpt(sentence, 300), evidence: [ref.reference] });
     }
   }
-  return { value: claims, evidence: evidenceDrafts, status: statusFor("compliance", manifest, startedAt, claims.length > 0, "No qualifying compliance claims published.") };
+  const value = [...claims.values()];
+  return { value, evidence: evidenceDrafts, status: statusFor("compliance", manifest, startedAt, value.length > 0, "No qualifying compliance claims published.") };
 }
 
 export function extractIntegrations(manifest: SourceManifest): ModuleResult<IntegrationSignal[]> {

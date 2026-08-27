@@ -51,11 +51,18 @@ const BLOCK_BODY_PATTERNS = [/hcaptcha/i, /recaptcha/i, /cf-ray/i, /cf-mitigated
 // Company Intelligence publishes first-party claims, not a site's navigation or
 // consent UI. Keep the unmodified HTML for link discovery and JSON-LD, while
 // every claim-facing extractor receives this main-content-only representation.
-const CHROME_SELECTOR = "script,style,noscript,svg,template,header,nav,footer,aside,form,[role='navigation'],[role='banner'],[role='contentinfo'],[data-cookie],[data-testid*='cookie'],[id*='cookie'],[class*='cookie'],[id*='consent'],[class*='consent'],[id*='onetrust'],[class*='onetrust']";
+const CHROME_SELECTOR = "script,style,noscript,svg,template,nav,footer,aside,form,[role='navigation'],[role='banner'],[role='contentinfo'],[data-cookie],[data-testid*='cookie'],[id*='cookie'],[class*='cookie'],[id*='consent'],[class*='consent'],[id*='onetrust'],[class*='onetrust']";
 
 function contentOnly($: cheerio.CheerioAPI) {
-  const content = $("body").clone();
+  // Prefer semantic page content over the entire body. Modern sites often put
+  // navigation/footer prose in generic divs, where selector-only removal is
+  // insufficient. A page's largest main/article container is the safer claim
+  // boundary; body fallback retains coverage for non-semantic sites.
+  const candidates = $("main, [role='main'], article").toArray();
+  const selected = candidates.sort((a, b) => $(b).text().length - $(a).text().length)[0];
+  const content = selected ? $(selected).clone() : $("body").clone();
   content.find(CHROME_SELECTOR).remove();
+  if (!selected) content.find("header, [role='banner']").remove();
   content.find("*").filter((_, element) => {
     const attributes = [
       $(element).attr("role"),

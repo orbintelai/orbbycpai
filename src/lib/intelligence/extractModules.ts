@@ -289,7 +289,7 @@ export function extractCompliance(manifest: SourceManifest): ModuleResult<Compli
 }
 
 const INTEGRATION_CONTEXT = /\b(integration|connector|marketplace|app directory|partner ecosystem|technology partner|works with|connects with|supported app)\b/i;
-const NON_INTEGRATION_LABEL = /^(about|company|pricing|log ?in|sign ?up|book a demo|contact|careers?|open positions|privacy|cookie policy|trust(?: center)?|security|terms|help|support|learn more|read more|product|solutions?)$/i;
+const NON_INTEGRATION_LABEL = /^(about|company|pricing|log ?in|sign ?up|start free|get started(?: with .+)?|request (?:a )?demo|book (?:a )?demo|talk to sales|contact|careers?|open positions|privacy|cookie policy|trust(?: center)?|security|terms|help|support|learn more|read more|product|solutions?)$/i;
 
 function integrationContext($: cheerio.CheerioAPI, element: any): boolean {
   let current = $(element);

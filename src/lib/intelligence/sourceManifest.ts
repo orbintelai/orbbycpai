@@ -34,6 +34,27 @@ const BLOCK_TITLE_PATTERNS = [
 ];
 const BLOCK_BODY_PATTERNS = [/hcaptcha/i, /recaptcha/i, /cf-ray/i, /cf-mitigated/i, /cloudflare/i, /perimeterx/i, /px-captcha/i, /human\.security/i];
 
+// Company Intelligence publishes first-party claims, not a site's navigation or
+// consent UI. Keep the unmodified HTML for link discovery and JSON-LD, while
+// every claim-facing extractor receives this main-content-only representation.
+const CHROME_SELECTOR = "script,style,noscript,svg,template,header,nav,footer,aside,form,[role='navigation'],[role='banner'],[role='contentinfo'],[data-cookie],[data-testid*='cookie'],[id*='cookie'],[class*='cookie'],[id*='consent'],[class*='consent'],[id*='onetrust'],[class*='onetrust']";
+
+function contentOnly($: cheerio.CheerioAPI) {
+  const content = $("body").clone();
+  content.find(CHROME_SELECTOR).remove();
+  content.find("*").filter((_, element) => {
+    const attributes = [
+      $(element).attr("role"),
+      $(element).attr("aria-label"),
+      $(element).attr("data-testid"),
+      $(element).attr("id"),
+      $(element).attr("class"),
+    ].filter(Boolean).join(" ");
+    return /\b(cookie|consent|privacy[-_ ]?choices?|cookiebot|quantcast|trustarc)\b/i.test(attributes);
+  }).remove();
+  return content;
+}
+
 function normaliseUrl(value: string, base?: string): string | null {
   try {
     const url = new URL(value, base);
@@ -87,6 +108,7 @@ async function fetchSourcePage(url: string, sourceKind: SourcePage["sourceKind"]
         title: "",
         text: "",
         html: "",
+        contentHtml: "",
         discoveredAt: new Date(),
         sourceKind,
         linkedFrom,
@@ -98,15 +120,17 @@ async function fetchSourcePage(url: string, sourceKind: SourcePage["sourceKind"]
     if (!/(text\/html|application\/xhtml\+xml|application\/xml|text\/xml|application\/rss\+xml)/i.test(contentType)) return null;
     const html = (await response.text()).slice(0, MAX_PAGE_BYTES);
     const $ = cheerio.load(html);
-    $("script,style,noscript,svg,template").remove();
     const title = $("title").first().text().replace(/\s+/g, " ").trim();
-    const text = $("body").text().replace(/\s+/g, " ").trim();
+    const content = contentOnly($);
+    const contentHtml = content.html() || "";
+    const text = content.text().replace(/\s+/g, " ").trim();
     const blockReason = isBlockPage(title, text);
     return {
       url: response.url || url,
       title,
       text,
       html,
+      contentHtml,
       discoveredAt: new Date(),
       sourceKind,
       linkedFrom,
@@ -119,6 +143,7 @@ async function fetchSourcePage(url: string, sourceKind: SourcePage["sourceKind"]
       title: "",
       text: "",
       html: "",
+      contentHtml: "",
       discoveredAt: new Date(),
       sourceKind,
       linkedFrom,

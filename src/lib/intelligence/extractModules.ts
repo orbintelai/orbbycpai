@@ -101,7 +101,7 @@ export function extractPeople(manifest: SourceManifest): ModuleResult<PersonSign
   const people = new Map<string, PersonSignal>();
   const evidenceDrafts: EvidenceDraft[] = [];
   for (const page of relevantPages(manifest, "people")) {
-    const $ = cheerio.load(page.html);
+    const $ = cheerio.load(page.contentHtml || page.html);
     for (const item of parseJsonLd(page) as Array<Record<string, unknown>>) {
       const type = String(item?.["@type"] || "").toLowerCase();
       const name = typeof item?.name === "string" ? item.name.trim() : "";
@@ -154,7 +154,7 @@ export function extractNews(manifest: SourceManifest): ModuleResult<NewsSignal[]
   const items = new Map<string, NewsSignal>();
   const evidenceDrafts: EvidenceDraft[] = [];
   for (const page of relevantPages(manifest, "news")) {
-    const $ = cheerio.load(page.html);
+    const $ = cheerio.load(page.contentHtml || page.html);
     $("article").each((_, article) => {
       const root = $(article);
       const headline = root.find("h1,h2,h3,h4,a").first().text().replace(/\s+/g, " ").trim();
@@ -276,7 +276,7 @@ export function extractIntegrations(manifest: SourceManifest): ModuleResult<Inte
   const integrations = new Map<string, IntegrationSignal>();
   const evidenceDrafts: EvidenceDraft[] = [];
   for (const page of relevantPages(manifest, "integrations")) {
-    const $ = cheerio.load(page.html);
+    const $ = cheerio.load(page.contentHtml || page.html);
     $("a[href],h2,h3,h4").each((_, element) => {
       const name = $(element).text().replace(/\s+/g, " ").trim();
       if (name.length < 2 || name.length > 60 || /^(integrations?|partners?|marketplace|apps?|learn more|read more)$/i.test(name)) return;
@@ -305,7 +305,7 @@ export function extractProductPricing(manifest: SourceManifest): ModuleResult<Pr
   let primaryCta: string | undefined;
   let pricingStatement: string | undefined;
   for (const page of pages) {
-    const $ = cheerio.load(page.html);
+    const $ = cheerio.load(page.contentHtml || page.html);
     $("h1,h2,h3,p,li").each((_, element) => {
       const value = $(element).text().replace(/\s+/g, " ").trim();
       if (value.length < 20 || value.length > 360) return;

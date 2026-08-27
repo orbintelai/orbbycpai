@@ -42,6 +42,8 @@ export interface SourcePage {
   title: string;
   text: string;
   html: string;
+  /** HTML after navigation, footer, consent, and other chrome are removed. */
+  contentHtml: string;
   discoveredAt: Date;
   sourceKind: "homepage" | "first_party" | "rss" | "sitemap" | "ats";
   blocked?: boolean;

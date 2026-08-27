@@ -14,6 +14,7 @@ import { runCompanyIntelligence } from "@/lib/intelligence/runCompanyIntelligenc
 import type { CompanyIntelligence, IntelligenceRunResult } from "@/lib/intelligence/types";
 import {
   AccountLimitError,
+  MONTHLY_ACCOUNT_FULL_REPORT_LIMIT,
   PlatformCapacityError,
   completeFullProfileUnit,
   releaseFullProfileUnit,
@@ -112,7 +113,7 @@ export async function POST(req: NextRequest) {
     reservation = await reserveFullProfileUnit({ userId, email: userEmail });
   } catch (error) {
     if (error instanceof AccountLimitError) {
-      return Response.json({ error: "monthly_report_limit_reached", message: error.message, limit: 10 }, { status: 429 });
+      return Response.json({ error: "monthly_report_limit_reached", message: error.message, limit: MONTHLY_ACCOUNT_FULL_REPORT_LIMIT }, { status: 429 });
     }
     if (error instanceof PlatformCapacityError) {
       return Response.json({ error: "beta_capacity_paused", message: error.message }, { status: 429 });

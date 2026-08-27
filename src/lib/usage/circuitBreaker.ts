@@ -1,7 +1,7 @@
 import { neon } from "@neondatabase/serverless";
 
 export const ADMIN_EMAILS = new Set(["tyler@yanaapp.com"]);
-export const MONTHLY_ACCOUNT_FULL_REPORT_LIMIT = 10;
+export const MONTHLY_ACCOUNT_FULL_REPORT_LIMIT = 5;
 const IS_STAGING = process.env.ORB_ENV === "staging";
 /** Staging defaults to 10 total shared units and no admin reserve unless explicitly configured. */
 export const SHARED_MONTHLY_FULL_PROFILE_CEILING = Number(
@@ -32,7 +32,7 @@ export interface CapacitySnapshot {
 
 export class AccountLimitError extends Error {
   constructor() {
-    super("You have used all 10 full beta reports for this calendar month.");
+    super("You have used all 5 full beta reports for this calendar month.");
     this.name = "AccountLimitError";
   }
 }

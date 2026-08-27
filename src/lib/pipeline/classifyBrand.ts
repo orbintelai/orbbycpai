@@ -397,7 +397,7 @@ Return ONLY this JSON object (no markdown, no explanation):
   "productType": "SaaS|marketplace|agency|ecommerce|media|tool|platform|service|other",
   "targetCustomers": "who this product is built for, 1-2 sentences",
   "businessModel": ["access-gated platform", "self-serve subscription", "contact-based sales", "freemium", "usage-based"],
-  "pricing": "pricing description or 'Pricing not publicly available'",
+  "pricing": "pricing description only when explicitly present in supplied page text; otherwise empty string",
   "keyFeatures": ["feature 1", "feature 2", "feature 3"],
   "primaryCTA": "the main call-to-action button text",
   "brandArchetype": "one of: The Innocent|The Sage|The Explorer|The Outlaw|The Magician|The Hero|The Lover|The Jester|The Everyman|The Caregiver|The Ruler|The Creator",
@@ -414,6 +414,7 @@ Rules:
 - For testimonials: extract up to 3 real customer quotes from the body text. If none found, return [].
 - For keyFeatures: extract up to 6 real features from the page copy. If none found, return [].
 - For businessModel: pick all that apply from the list above.
+- For pricing: return a pricing description only when the supplied page text explicitly states it; otherwise return an empty string. Never infer that pricing is unavailable.
 - For productCategory: 2-3 category tags that describe the product space.
 - All fields are required. Use empty string "" or [] for fields where data is not available.
 - For brandArchetype: choose the single best-fit archetype from the provided list.
@@ -713,7 +714,8 @@ export async function classifyBrand(raw: Record<string, unknown>): Promise<Brand
       productType: llmData.productType || "other",
       targetCustomers: llmData.targetCustomers || "",
       businessModel: Array.isArray(llmData.businessModel) ? llmData.businessModel : [],
-      pricing: llmData.pricing || "Pricing not publicly available",
+      // Pricing is source-backed in Company Intelligence. Never manufacture an unavailable claim here.
+      pricing: llmData.pricing || "",
       keyFeatures: Array.isArray(llmData.keyFeatures) ? llmData.keyFeatures : [],
       primaryCTA: llmData.primaryCTA || "",
       techSignals: browserTechSignals,

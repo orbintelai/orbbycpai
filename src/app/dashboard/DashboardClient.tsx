@@ -97,6 +97,15 @@ function formatDate(iso: string): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
+function displayPricing(profile: BrandProfile): string {
+  const sourcedProduct = profile.companyIntelligence?.productPricing;
+  const sourcedStatus = profile.companyIntelligence?.moduleStatuses?.productPricing?.status;
+  // When Company Intelligence exists, it is the sole pricing authority.
+  // Legacy classification is retained only for historical reports without source-backed data.
+  if (sourcedStatus) return sourcedProduct?.pricingStatement || "No public pricing statement found.";
+  return profile.productIntelligence?.pricing || "—";
+}
+
 function extractDomain(url: string): string {
   try { return new URL(url).hostname.replace("www.", ""); } catch { return url; }
 }
@@ -299,12 +308,6 @@ function BrandReportTab({ profile, generationId }: { profile: BrandProfile; gene
               <div>
                 <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", marginBottom: 4 }}>Target Customer</div>
                 <div style={{ fontSize: 13, color: "rgba(255,255,255,0.7)", lineHeight: 1.5 }}>{pi.targetCustomers}</div>
-              </div>
-            )}
-            {pi.pricing && (
-              <div>
-                <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", marginBottom: 4 }}>Pricing</div>
-                <div style={{ fontSize: 13, color: "rgba(255,255,255,0.7)" }}>{pi.pricing}</div>
               </div>
             )}
             {(pi.businessModel || []).length > 0 && (
@@ -581,7 +584,7 @@ function ComparisonTab({ primaryProfile }: { primaryProfile: BrandProfile }) {
     { key: "space", label: "Spatial Philosophy", render: (p: BrandProfile) => p.spatialPhilosophy?.classification || "—" },
     { key: "type", label: "Product Type", render: (p: BrandProfile) => p.productIntelligence?.productType || "—" },
     { key: "model", label: "Business Model", render: (p: BrandProfile) => (p.productIntelligence?.businessModel || []).join(", ") || "—" },
-    { key: "pricing", label: "Pricing", render: (p: BrandProfile) => p.productIntelligence?.pricing || "—" },
+    { key: "pricing", label: "Pricing", render: (p: BrandProfile) => displayPricing(p) },
     { key: "cta", label: "Primary CTA", render: (p: BrandProfile) => p.productIntelligence?.primaryCTA || "—" },
     { key: "sentiment_openai", label: "GPT Sentiment", render: (p: BrandProfile) => p.aiPerception ? `${p.aiPerception.openai.sentimentScore}/5` : "—" },
     { key: "sentiment_claude", label: "Claude Sentiment", render: (p: BrandProfile) => p.aiPerception ? `${p.aiPerception.anthropic.sentimentScore}/5` : "—" },

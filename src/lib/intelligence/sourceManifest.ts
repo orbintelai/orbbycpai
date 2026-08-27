@@ -14,7 +14,7 @@ const PATH_PATTERNS: Record<IntelligenceModule, RegExp[]> = {
   news: [/\/(news|press|newsroom|updates|changelog)(\/|$)/i],
   hiring: [/\/(careers|jobs|join|work-with-us)(\/|$)/i],
   compliance: [/\/(security|trust|privacy|compliance|legal)(\/|$)/i],
-  integrations: [/\/(integrations|partners|marketplace|apps)(\/|$)/i],
+  integrations: [/\/(integrations|marketplace|apps)(\/|$)/i],
   productPricing: [/\/(product|platform|solutions|pricing)(\/|$)/i],
 };
 

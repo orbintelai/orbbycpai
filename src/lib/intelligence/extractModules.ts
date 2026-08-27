@@ -288,25 +288,47 @@ export function extractCompliance(manifest: SourceManifest): ModuleResult<Compli
   return { value, evidence: evidenceDrafts, status: statusFor("compliance", manifest, startedAt, value.length > 0, "No qualifying compliance claims published.") };
 }
 
+const INTEGRATION_CONTEXT = /\b(integration|connector|marketplace|app directory|partner ecosystem|technology partner|works with|connects with|supported app)\b/i;
+const NON_INTEGRATION_LABEL = /^(about|company|pricing|log ?in|sign ?up|book a demo|contact|careers?|open positions|privacy|cookie policy|trust(?: center)?|security|terms|help|support|learn more|read more|product|solutions?)$/i;
+
+function integrationContext($: cheerio.CheerioAPI, element: any): boolean {
+  let current = $(element);
+  for (let depth = 0; depth < 5 && current.length; depth += 1) {
+    const attributes = [current.attr("class"), current.attr("id"), current.attr("data-testid"), current.attr("aria-label")].filter(Boolean).join(" ");
+    const nearbyText = current.text().replace(/\s+/g, " ").trim();
+    if (INTEGRATION_CONTEXT.test(attributes) || INTEGRATION_CONTEXT.test(nearbyText)) return true;
+    if (current.is("article,li") && nearbyText.length <= 260) return true;
+    current = current.parent();
+  }
+  return false;
+}
+
 export function extractIntegrations(manifest: SourceManifest): ModuleResult<IntegrationSignal[]> {
   const startedAt = Date.now();
   const integrations = new Map<string, IntegrationSignal>();
   const evidenceDrafts: EvidenceDraft[] = [];
   for (const page of relevantPages(manifest, "integrations")) {
     const $ = cheerio.load(page.contentHtml || page.html);
-    $("a[href],h2,h3,h4").each((_, element) => {
-      const name = $(element).text().replace(/\s+/g, " ").trim();
-      if (name.length < 2 || name.length > 60 || /^(integrations?|partners?|marketplace|apps?|learn more|read more)$/i.test(name)) return;
-      const href = $(element).is("a") ? $(element).attr("href") : $(element).find("a[href]").first().attr("href");
+    $("a[href],h2 a[href],h3 a[href],h4 a[href]").each((_, element) => {
+      const anchor = $(element).is("a") ? $(element) : $(element).find("a[href]").first();
+      const name = anchor.text().replace(/\s+/g, " ").trim();
+      const href = anchor.attr("href");
+      if (!href || name.length < 2 || name.length > 80 || NON_INTEGRATION_LABEL.test(name) || !integrationContext($, element)) return;
+      let url: string;
+      try {
+        // Resolve against the crawled target page, never Orb's dashboard origin.
+        url = new URL(href, page.url).toString();
+        if (!/^https?:$/i.test(new URL(url).protocol)) return;
+      } catch { return; }
       const key = name.toLowerCase();
       if (integrations.has(key)) return;
       const ref = evidence("integrations", "integration", key, "integrations", page, name);
       evidenceDrafts.push(ref.draft);
-      integrations.set(key, { name, url: href ? new URL(href, page.url).toString() : undefined, evidence: [ref.reference] });
+      integrations.set(key, { name, url, evidence: [ref.reference] });
     });
   }
   const value = [...integrations.values()].slice(0, 40);
-  return { value, evidence: evidenceDrafts, status: statusFor("integrations", manifest, startedAt, value.length > 0, "No public integrations page.") };
+  return { value, evidence: evidenceDrafts, status: statusFor("integrations", manifest, startedAt, value.length > 0, "No public integrations directory found.") };
 }
 
 export function extractProductPricing(manifest: SourceManifest): ModuleResult<ProductPricingSignal> {

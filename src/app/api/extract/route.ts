@@ -14,7 +14,6 @@ import { runCompanyIntelligence } from "@/lib/intelligence/runCompanyIntelligenc
 import type { CompanyIntelligence, IntelligenceRunResult } from "@/lib/intelligence/types";
 import {
   AccountLimitError,
-  MONTHLY_ACCOUNT_FULL_REPORT_LIMIT,
   PlatformCapacityError,
   completeFullProfileUnit,
   releaseFullProfileUnit,
@@ -113,7 +112,7 @@ export async function POST(req: NextRequest) {
     reservation = await reserveFullProfileUnit({ userId, email: userEmail });
   } catch (error) {
     if (error instanceof AccountLimitError) {
-      return Response.json({ error: "monthly_report_limit_reached", message: error.message, limit: MONTHLY_ACCOUNT_FULL_REPORT_LIMIT }, { status: 429 });
+      return Response.json({ error: "monthly_report_limit_reached", message: error.message, limit: 10 }, { status: 429 });
     }
     if (error instanceof PlatformCapacityError) {
       return Response.json({ error: "beta_capacity_paused", message: error.message }, { status: 429 });
@@ -166,32 +165,47 @@ export async function POST(req: NextRequest) {
         profile.companyIntelligence = intelligenceResult.intelligence;
 
         emit({ type: "status", step: 8, total: 9, message: "Creating immutable intelligence snapshot..." });
-        const previous = await db
-          .select({ id: generations.id, snapshotVersion: generations.snapshotVersion })
-          .from(generations)
-          .where(and(eq(generations.domain, domain), eq(generations.status, "complete"), eq(generations.userId, userId)))
-          .orderBy(desc(generations.snapshotVersion), desc(generations.completedAt))
-          .limit(1);
-        const snapshotVersion = (previous[0]?.snapshotVersion || 0) + 1;
+        // Snapshot versions are global per domain (the database unique index is
+        // `(domain, snapshot_version)`), not per user. A brief retry protects
+        // concurrent reports for the same domain without ever overwriting a row.
         const completedAt = new Date();
-        const [generation] = await db
-          .insert(generations)
-          .values({
-            userId,
-            brandUrl: normalizedUrl,
-            domain,
-            brandProfile: profile as unknown as Record<string, unknown>,
-            status: "complete",
-            runOrigin: "direct",
-            snapshotVersion,
-            previousGenerationId: previous[0]?.id || null,
-            accessTier: "full",
-            moduleStatuses: intelligenceResult.moduleStatuses,
-            startedAt,
-            completedAt,
-            runtimeMs: completedAt.valueOf() - startedAt.valueOf(),
-          })
-          .returning({ id: generations.id });
+        let generation: { id: string } | undefined;
+        let snapshotVersion = 0;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const previous = await db
+            .select({ id: generations.id, snapshotVersion: generations.snapshotVersion })
+            .from(generations)
+            .where(and(eq(generations.domain, domain), eq(generations.status, "complete")))
+            .orderBy(desc(generations.snapshotVersion), desc(generations.completedAt))
+            .limit(1);
+          snapshotVersion = (previous[0]?.snapshotVersion || 0) + 1;
+          try {
+            const inserted = await db
+              .insert(generations)
+              .values({
+                userId,
+                brandUrl: normalizedUrl,
+                domain,
+                brandProfile: profile as unknown as Record<string, unknown>,
+                status: "complete",
+                runOrigin: "direct",
+                snapshotVersion,
+                previousGenerationId: previous[0]?.id || null,
+                accessTier: "full",
+                moduleStatuses: intelligenceResult.moduleStatuses,
+                startedAt,
+                completedAt,
+                runtimeMs: completedAt.valueOf() - startedAt.valueOf(),
+              })
+              .returning({ id: generations.id });
+            generation = inserted[0];
+            break;
+          } catch (error) {
+            const collision = String(error).includes("generations_domain_snapshot_version_unique");
+            if (!collision || attempt === 2) throw error;
+          }
+        }
+        if (!generation) throw new Error("Unable to allocate an immutable snapshot version.");
 
         if (intelligenceResult.evidence.length > 0) {
           await db.insert(analysisEvidence).values(intelligenceResult.evidence.map((item) => ({ ...item, generationId: generation.id })));

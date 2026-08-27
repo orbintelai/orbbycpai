@@ -333,7 +333,7 @@ export default function BrandExtractionPanel() {
                 Create your beta account
               </div>
               <div style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", marginTop: 2 }}>
-                Five full company profiles per calendar month · AI Perception · Competitor Comparison · Source-backed evidence
+                Ten full company profiles per calendar month · AI Perception · Competitor Comparison · Source-backed evidence
               </div>
             </div>
             <Link
@@ -362,7 +362,7 @@ export default function BrandExtractionPanel() {
 
       {step === "idle" && (
         <p style={{ margin: "10px 0 0", fontSize: 12, color: "var(--text-tertiary)", textAlign: "center" }}>
-          Free while in beta · Five full company profiles per calendar month · No credit card
+          Free while in beta · Ten full company profiles per calendar month · No credit card
         </p>
       )}
     </div>

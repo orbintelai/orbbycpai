@@ -47,7 +47,7 @@ export default async function DashboardPage() {
       completedRuns: userGenerations.filter((generation) => generation.status === "complete").length,
       totalGenerations: userGenerations.length,
       generationsUsed: usage?.completedRuns ?? 0,
-      generationsLimit: 5,
+      generationsLimit: 10,
       tier: isAdmin ? "admin" : (subscription?.tier ?? "free"),
       capacity,
     }}

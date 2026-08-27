@@ -173,26 +173,39 @@ async function extractFreshProfile(input: { url: string; userId: string; email: 
     profile.companyIntelligence = intelligence.intelligence;
 
     const domain = normalizeDomain(normalizedUrl);
-    const previous = await db.select({ id: generations.id, snapshotVersion: generations.snapshotVersion })
-      .from(generations)
-      .where(and(eq(generations.userId, input.userId), eq(generations.domain, domain), eq(generations.status, "complete")))
-      .orderBy(desc(generations.snapshotVersion), desc(generations.completedAt)).limit(1);
+    // The immutable ledger's unique key is global per domain. Re-read and retry
+    // only when a concurrent report claims the same next snapshot version first.
     const completedAt = new Date();
-    const [generation] = await db.insert(generations).values({
-      userId: input.userId,
-      brandUrl: normalizedUrl,
-      domain,
-      brandProfile: profile as unknown as Record<string, unknown>,
-      status: "complete",
-      runOrigin: "comparison",
-      snapshotVersion: (previous[0]?.snapshotVersion || 0) + 1,
-      previousGenerationId: previous[0]?.id || null,
-      accessTier: "full",
-      moduleStatuses: intelligence.moduleStatuses,
-      startedAt,
-      completedAt,
-      runtimeMs: completedAt.valueOf() - startedAt.valueOf(),
-    }).returning({ id: generations.id });
+    let generation: { id: string } | undefined;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const previous = await db.select({ id: generations.id, snapshotVersion: generations.snapshotVersion })
+        .from(generations)
+        .where(and(eq(generations.domain, domain), eq(generations.status, "complete")))
+        .orderBy(desc(generations.snapshotVersion), desc(generations.completedAt)).limit(1);
+      try {
+        const inserted = await db.insert(generations).values({
+          userId: input.userId,
+          brandUrl: normalizedUrl,
+          domain,
+          brandProfile: profile as unknown as Record<string, unknown>,
+          status: "complete",
+          runOrigin: "comparison",
+          snapshotVersion: (previous[0]?.snapshotVersion || 0) + 1,
+          previousGenerationId: previous[0]?.id || null,
+          accessTier: "full",
+          moduleStatuses: intelligence.moduleStatuses,
+          startedAt,
+          completedAt,
+          runtimeMs: completedAt.valueOf() - startedAt.valueOf(),
+        }).returning({ id: generations.id });
+        generation = inserted[0];
+        break;
+      } catch (error) {
+        const collision = String(error).includes("generations_domain_snapshot_version_unique");
+        if (!collision || attempt === 2) throw error;
+      }
+    }
+    if (!generation) throw new Error("Unable to allocate an immutable snapshot version.");
     if (intelligence.evidence.length) await db.insert(analysisEvidence).values(intelligence.evidence.map((item) => ({ ...item, generationId: generation.id })));
     try {
       await completeFullProfileUnit({ userId: input.userId, email: input.email, pool: reservation.pool, accountCounted: reservation.accountCounted });

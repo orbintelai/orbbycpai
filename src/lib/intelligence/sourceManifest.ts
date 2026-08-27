@@ -5,7 +5,21 @@ import type { IntelligenceModule, SourceManifest, SourcePage } from "./types";
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_PAGE_BYTES = 1_500_000;
 const MAX_FIRST_PARTY_PAGES = 16;
+const MAX_FIRST_PARTY_PAGES_PER_MODULE = 3;
+const MAX_ATS_PAGES = 2;
 const CONCURRENCY = 4;
+
+// A round-robin budget preserves coverage: a cluster of deep trust pages cannot
+// consume a whole run before product, hiring, people, or news are inspected.
+const MODULE_SCAN_ORDER: IntelligenceModule[] = ["productPricing", "integrations", "news", "people", "hiring", "compliance"];
+const NESTED_PROBE_PATHS: Record<IntelligenceModule, string[]> = {
+  people: ["company/about", "company/team", "company/leadership", "about/team", "about/leadership"],
+  news: ["company/news", "resources/news", "product/updates"],
+  hiring: ["company/careers", "company/jobs"],
+  compliance: ["trust/security", "trust/compliance", "legal/privacy"],
+  integrations: ["product/integrations", "platform/integrations", "partners/marketplace"],
+  productPricing: ["products/platform", "platform/pricing", "solutions/platform"],
+};
 
 const PATH_PATTERNS: Record<IntelligenceModule, RegExp[]> = {
   people: [/\/(about|team|leadership|our-team|company|people)(\/|$)/i],
@@ -189,6 +203,26 @@ async function boundedMap<T, R>(values: T[], mapper: (value: T) => Promise<R>): 
   return results;
 }
 
+function selectFairCandidates(moduleCandidates: Record<IntelligenceModule, string[]>): string[] {
+  const selected = new Set<string>();
+  const allocated: Record<IntelligenceModule, number> = {
+    people: 0, news: 0, hiring: 0, compliance: 0, integrations: 0, productPricing: 0,
+  };
+  for (let round = 0; round < MAX_FIRST_PARTY_PAGES_PER_MODULE && selected.size < MAX_FIRST_PARTY_PAGES; round += 1) {
+    let selectedInRound = false;
+    for (const module of MODULE_SCAN_ORDER) {
+      if (selected.size >= MAX_FIRST_PARTY_PAGES || allocated[module] >= MAX_FIRST_PARTY_PAGES_PER_MODULE) continue;
+      const candidate = moduleCandidates[module].find((url) => !selected.has(url));
+      if (!candidate) continue;
+      selected.add(candidate);
+      allocated[module] += 1;
+      selectedInRound = true;
+    }
+    if (!selectedInRound) break;
+  }
+  return [...selected];
+}
+
 /**
  * Builds a first-party-only crawl manifest. The initial homepage capture already
  * happened in the browser pipeline; this crawler fetches narrowly allowlisted
@@ -231,17 +265,36 @@ export async function buildSourceManifest(homepageUrl: string): Promise<SourceMa
     }
   }
 
-  // Direct path probes ensure common first-party pages are checked even if hidden from nav.
-  for (const paths of Object.values(PATH_PATTERNS)) {
-    for (const pattern of paths) {
+  // Probe every supported root path and a small, explicit set of common nested
+  // paths. The former slice(0, 2) silently made leadership, newsroom, and
+  // changelog probes unreachable.
+  for (const module of Object.keys(PATH_PATTERNS) as IntelligenceModule[]) {
+    for (const pattern of PATH_PATTERNS[module]) {
       const candidates = pattern.source.match(/\(([^)]+)\)/)?.[1]?.split("|") ?? [];
-      for (const candidate of candidates.slice(0, 2)) firstPartyCandidates.add(new URL(`/${candidate}`, canonicalHomepage).toString());
+      for (const candidate of candidates) {
+        const url = new URL(`/${candidate}`, canonicalHomepage).toString();
+        firstPartyCandidates.add(url);
+        moduleCandidates[module].push(url);
+      }
+    }
+    for (const path of NESTED_PROBE_PATHS[module]) {
+      const url = new URL(`/${path}`, canonicalHomepage).toString();
+      firstPartyCandidates.add(url);
+      moduleCandidates[module].push(url);
     }
   }
 
-  const orderedCandidates = [...firstPartyCandidates]
-    .filter((url) => firstPartyHost(new URL(url).hostname, rootHostname))
-    .slice(0, MAX_FIRST_PARTY_PAGES);
+  for (const module of Object.keys(moduleCandidates) as IntelligenceModule[]) {
+    moduleCandidates[module] = [...new Set(moduleCandidates[module])];
+  }
+  const selectedCandidates = new Set(selectFairCandidates(moduleCandidates));
+  for (const module of Object.keys(moduleCandidates) as IntelligenceModule[]) {
+    // Module status and evidence now disclose pages actually selected for crawl,
+    // not every discovered link that lost the bounded fair-budget selection.
+    moduleCandidates[module] = moduleCandidates[module].filter((url) => selectedCandidates.has(url));
+  }
+  const orderedCandidates = [...selectedCandidates]
+    .filter((url) => firstPartyHost(new URL(url).hostname, rootHostname));
 
   const fetchedPages = await boundedMap(orderedCandidates, async (url) => fetchSourcePage(url, "first_party", canonicalHomepage));
   for (const page of fetchedPages) {
@@ -251,7 +304,7 @@ export async function buildSourceManifest(homepageUrl: string): Promise<SourceMa
     for (const module of moduleMatches(page.url)) moduleCandidates[module].push(page.url);
   }
 
-  const atsPages = await boundedMap(atsCandidates.slice(0, 4), async ({ url, linkedFrom }) => fetchSourcePage(url, "ats", linkedFrom));
+  const atsPages = await boundedMap(atsCandidates.slice(0, MAX_ATS_PAGES), async ({ url, linkedFrom }) => fetchSourcePage(url, "ats", linkedFrom));
   for (const page of atsPages) {
     if (!page) continue;
     if (page.title || page.text || page.blocked) pages.push(page);

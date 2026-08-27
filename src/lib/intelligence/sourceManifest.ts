@@ -76,6 +76,15 @@ function contentOnly($: cheerio.CheerioAPI) {
   return content;
 }
 
+export function cleanSourceContent(html: string): { contentHtml: string; text: string } {
+  const $ = cheerio.load(html);
+  const content = contentOnly($);
+  return {
+    contentHtml: content.html() || "",
+    text: content.text().replace(/\s+/g, " ").trim(),
+  };
+}
+
 function normaliseUrl(value: string, base?: string): string | null {
   try {
     const url = new URL(value, base);
@@ -142,9 +151,7 @@ async function fetchSourcePage(url: string, sourceKind: SourcePage["sourceKind"]
     const html = (await response.text()).slice(0, MAX_PAGE_BYTES);
     const $ = cheerio.load(html);
     const title = $("title").first().text().replace(/\s+/g, " ").trim();
-    const content = contentOnly($);
-    const contentHtml = content.html() || "";
-    const text = content.text().replace(/\s+/g, " ").trim();
+    const { contentHtml, text } = cleanSourceContent(html);
     const blockReason = isBlockPage(title, text);
     return {
       url: response.url || url,

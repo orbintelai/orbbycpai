@@ -254,6 +254,23 @@ export async function extractHiring(manifest: SourceManifest): Promise<ModuleRes
   return { value, evidence: evidenceDrafts, status: statusFor("hiring", manifest, startedAt, roles.length > 0, "No public open roles found.") };
 }
 
+function localComplianceExcerpt(page: SourcePage, framework: string): string | null {
+  const $ = cheerio.load(page.contentHtml || page.html);
+  const frameworkPattern = new RegExp(`\\b${framework.split(/\\s+/).join("\\s+")}\\b`, "i");
+  const candidates = $("p,li,dt,dd,a,span,td,th,h1,h2,h3,h4,h5,h6").toArray()
+    .filter((element) => frameworkPattern.test($(element).text()))
+    .flatMap((element) => {
+      const own = $(element).text().replace(/\\s+/g, " ").trim();
+      const parent = $(element).parent().text().replace(/\\s+/g, " ").trim();
+      // A nearby parent gives a framework label the immediately associated
+      // description without ever falling back to document-wide page text.
+      return [parent, own].filter((text) => text.length >= framework.length && text.length <= 420 && frameworkPattern.test(text));
+    })
+    .sort((a, b) => a.length - b.length);
+  const descriptive = candidates.find((text) => text.length >= Math.max(20, framework.length + 12));
+  return descriptive ? textExcerpt(descriptive, 300) : candidates[0] ? textExcerpt(candidates[0], 300) : null;
+}
+
 export function extractCompliance(manifest: SourceManifest): ModuleResult<ComplianceClaim[]> {
   const startedAt = Date.now();
   const claims = new Map<string, ComplianceClaim>();
@@ -261,10 +278,9 @@ export function extractCompliance(manifest: SourceManifest): ModuleResult<Compli
   const seenEvidence = new Set<string>();
   for (const page of relevantPages(manifest, "compliance")) {
     for (const framework of COMPLIANCE_FRAMEWORKS) {
-      const frameworkPattern = framework.split(/\s+/).join("\\s+");
-      const sentence = sentenceContaining(page.text, new RegExp(`\\b${frameworkPattern}\\b`, "i"));
-      if (!sentence) continue;
-      const ref = evidence("compliance", "claim", framework.toLowerCase(), "compliance.claims", page, sentence);
+      const excerpt = localComplianceExcerpt(page, framework);
+      if (!excerpt) continue;
+      const ref = evidence("compliance", "claim", framework.toLowerCase(), "compliance.claims", page, excerpt);
       // One company fact per framework / field path. A company may publish the
       // same certification on several trust subpages; those are supporting
       // sources, not separate SOC 2, HIPAA, or GDPR claims.
@@ -281,7 +297,7 @@ export function extractCompliance(manifest: SourceManifest): ModuleResult<Compli
         }
         continue;
       }
-      claims.set(claimKey, { framework, claim: textExcerpt(sentence, 300), evidence: [ref.reference] });
+      claims.set(claimKey, { framework, claim: excerpt, evidence: [ref.reference] });
     }
   }
   const value = [...claims.values()];

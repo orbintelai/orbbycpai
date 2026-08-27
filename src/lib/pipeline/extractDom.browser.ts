@@ -248,8 +248,14 @@ export function browserExtract(): Record<string, unknown> {
   // FONT DISCOVERY
   // ═══════════════════════════════════════════════════════════════════════
 
-  // Normalise a fontFamily string to just the first named family
-  const cleanFamily = (raw: string) => raw.split(",")[0].trim().replace(/['"]/g, "");
+  // Normalise a fontFamily string to just the first named family and repair
+  // compact CSS tokens so evidence-facing labels remain human-readable.
+  const cleanFamily = (raw: string) => {
+    const family = raw.split(",")[0].trim().replace(/['"]/g, "");
+    const compact = family.replace(/[\s_-]/g, "").toLowerCase();
+    if (compact === "dmsans") return "DM Sans";
+    return family;
+  };
 
   // Returns null for pure system/generic fallbacks
   const brandFamily = (raw: string) => {

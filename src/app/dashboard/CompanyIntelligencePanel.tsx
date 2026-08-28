@@ -48,7 +48,7 @@ function ModuleHeading({ module, status }: { module: IntelligenceModule; status?
     : status?.status === "blocked"
       ? "Source restricted access"
       : status?.status === "source_not_found"
-        ? "Not published"
+        ? "No source found"
         : status?.status === "source_empty"
           ? "Source found; no extractable content"
           : status?.status === "source_found_unparsed"
@@ -75,8 +75,8 @@ function CoverageStrip({ statuses }: { statuses: CompanyIntelligence["moduleStat
   if (!unavailable.length) return null;
   return (
     <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", padding: "13px 2px 0", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-      <span style={{ color: "rgba(255,255,255,0.34)", fontSize: 11 }}>Not published:</span>
-      {unavailable.map((module) => <span key={module} title={statuses[module]?.reason || "No qualifying first-party source was found for this module."} style={{ color: "rgba(255,255,255,0.54)", fontSize: 11, cursor: "help" }}>{LABELS[module]}</span>)}
+      <span style={{ color: "rgba(255,255,255,0.34)", fontSize: 11 }}>No source found:</span>
+      {unavailable.map((module) => <span key={module} title={`${statuses[module]?.reason || "No qualifying first-party source was found for this module."}\n\nChecked paths:\n${statuses[module]?.crawledUrls?.join("\n") || "No qualifying path was selected."}`} style={{ color: "rgba(255,255,255,0.54)", fontSize: 11, cursor: "help" }}>{LABELS[module]}</span>)}
     </div>
   );
 }

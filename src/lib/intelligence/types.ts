@@ -66,12 +66,27 @@ export interface SourcePage {
   fetchError?: string;
 }
 
+export interface ModuleDiscoveryTelemetry {
+  candidateCount: number;
+  pagesConsumed: number;
+  pagesDeferredByBudget: number;
+}
+
+export interface DiscoveryTelemetry {
+  pageBudget: number;
+  pagesConsumed: number;
+  pagesDeferredByBudget: number;
+  candidateCounts: Record<IntelligenceModule, number>;
+  moduleMetrics: Record<IntelligenceModule, ModuleDiscoveryTelemetry>;
+}
+
 export interface SourceManifest {
   origin: string;
   homepageUrl: string;
   pages: SourcePage[];
   moduleCandidates: Record<IntelligenceModule, string[]>;
   blockedUrls: Record<string, string>;
+  discoveryTelemetry: DiscoveryTelemetry;
 }
 
 export interface PersonSignal {
@@ -132,6 +147,8 @@ export interface CompanyIntelligence {
   integrations?: IntegrationSignal[];
   productPricing?: ProductPricingSignal;
   moduleStatuses: Record<IntelligenceModule, ModuleStatus>;
+  /** First-party crawl accounting persisted with the immutable report for coverage QA. */
+  discoveryTelemetry?: DiscoveryTelemetry;
 }
 
 export interface IntelligenceRunResult {

@@ -449,6 +449,7 @@ export async function runSourceModules(manifest: SourceManifest): Promise<{ inte
       compliance: compliance.value,
       integrations: integrations.value,
       productPricing: productPricing.value,
+      discoveryTelemetry: manifest.discoveryTelemetry,
       moduleStatuses: {
         people: people.status,
         news: news.status,

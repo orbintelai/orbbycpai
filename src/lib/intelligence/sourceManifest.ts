@@ -396,10 +396,23 @@ export async function buildSourceManifest(homepageUrl: string): Promise<SourceMa
   for (const module of Object.keys(moduleCandidates) as IntelligenceModule[]) {
     moduleCandidates[module] = [...new Set(moduleCandidates[module])];
   }
+  const candidateCounts = Object.fromEntries(
+    (Object.keys(moduleCandidates) as IntelligenceModule[]).map((module) => [module, moduleCandidates[module].length]),
+  ) as Record<IntelligenceModule, number>;
   const selectedCandidates = new Set(selectFairCandidates(moduleCandidates));
+  const moduleMetrics = Object.fromEntries(
+    (Object.keys(moduleCandidates) as IntelligenceModule[]).map((module) => {
+      const selectedForModule = moduleCandidates[module].filter((url) => selectedCandidates.has(url));
+      return [module, {
+        candidateCount: candidateCounts[module],
+        pagesConsumed: selectedForModule.length,
+        pagesDeferredByBudget: Math.max(0, candidateCounts[module] - selectedForModule.length),
+      }];
+    }),
+  ) as SourceManifest["discoveryTelemetry"]["moduleMetrics"];
   for (const module of Object.keys(moduleCandidates) as IntelligenceModule[]) {
-    // Module status and evidence now disclose pages actually selected for crawl,
-    // not every discovered link that lost the bounded fair-budget selection.
+    // Module status and evidence disclose pages actually selected for crawl,
+    // while discoveryTelemetry retains candidates that lost fair-budget selection.
     moduleCandidates[module] = moduleCandidates[module].filter((url) => selectedCandidates.has(url));
   }
   const orderedCandidates = [...selectedCandidates]
@@ -438,5 +451,12 @@ export async function buildSourceManifest(homepageUrl: string): Promise<SourceMa
     pages,
     moduleCandidates,
     blockedUrls,
+    discoveryTelemetry: {
+      pageBudget: MAX_FIRST_PARTY_PAGES,
+      pagesConsumed: orderedCandidates.length,
+      pagesDeferredByBudget: Math.max(0, firstPartyCandidates.size - selectedCandidates.size),
+      candidateCounts,
+      moduleMetrics,
+    },
   };
 }

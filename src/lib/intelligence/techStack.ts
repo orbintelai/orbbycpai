@@ -58,7 +58,7 @@ const SIGNATURES: TechnologySignature[] = [
   { name: "Gatsby", category: "Framework", patterns: [/gatsby/i] },
   { name: "SvelteKit", category: "Framework", patterns: [/_app\/immutable|sveltekit/i] },
   { name: "WordPress", category: "Framework", patterns: [/wp-content|wp-includes|wordpress/i] },
-  { name: "Webflow", category: "Framework", patterns: [/webflow\.com|webflow\.io/i] },
+  { name: "Webflow", category: "Framework", patterns: [/assets\.website-files\.com|uploads-ssl\.webflow\.com|webflow\.js\b|webflow\.io/i] },
   { name: "Framer", category: "Framework", patterns: [/framer\.com|framerusercontent/i] },
   { name: "Wix", category: "Framework", patterns: [/wixstatic|wix\.com/i] },
   { name: "Squarespace", category: "Framework", patterns: [/squarespace|sqsp\.net/i] },

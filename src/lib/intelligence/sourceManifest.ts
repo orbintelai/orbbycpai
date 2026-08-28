@@ -1,5 +1,6 @@
 import * as crypto from "crypto";
 import * as cheerio from "cheerio";
+import robotsParser from "robots-parser";
 import type { IntelligenceModule, SourceManifest, SourcePage } from "./types";
 
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -8,6 +9,8 @@ const MAX_FIRST_PARTY_PAGES = 16;
 const MAX_FIRST_PARTY_PAGES_PER_MODULE = 3;
 const MAX_ATS_PAGES = 2;
 const CONCURRENCY = 4;
+const ROBOTS_USER_AGENT = "OrbCompanyIntelligence";
+const robotsPolicyCache = new Map<string, Promise<{ allowed: boolean; reason?: string }>>();
 
 // A round-robin budget preserves coverage: a cluster of deep trust pages cannot
 // consume a whole run before product, hiring, people, or news are inspected.
@@ -120,7 +123,56 @@ export function textExcerpt(value: string, maxLength = 420): string {
   return compact.length <= maxLength ? compact : `${compact.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
-async function fetchSourcePage(url: string, sourceKind: SourcePage["sourceKind"], linkedFrom?: string): Promise<SourcePage | null> {
+async function robotsPolicy(url: string): Promise<{ allowed: boolean; reason?: string }> {
+  const origin = new URL(url).origin;
+  let pending = robotsPolicyCache.get(origin);
+  if (!pending) {
+    pending = (async () => {
+      const robotsUrl = new URL("/robots.txt", origin).toString();
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      try {
+        const response = await fetch(robotsUrl, {
+          signal: controller.signal,
+          headers: { "User-Agent": `${ROBOTS_USER_AGENT}/1.0 (+https://orbbycpai-production.up.railway.app)` },
+        });
+        // A missing robots file authorizes the host. A failed retrieval does not: preserve
+        // a visible unavailable state instead of silently crawling under an unknown policy.
+        if (response.status === 404) return { allowed: true };
+        if (!response.ok) return { allowed: false, reason: `Could not retrieve ${robotsUrl} (HTTP ${response.status}); source skipped by robots policy.` };
+        const parser = robotsParser(robotsUrl, await response.text());
+        if (parser.isAllowed(url, ROBOTS_USER_AGENT) === false) {
+          return { allowed: false, reason: `robots.txt disallows OrbCompanyIntelligence from accessing this host path.` };
+        }
+        return { allowed: true };
+      } catch (error) {
+        return { allowed: false, reason: `Could not retrieve host robots.txt; source skipped by robots policy (${error instanceof Error ? error.message : "request failed"}).` };
+      } finally {
+        clearTimeout(timeout);
+      }
+    })();
+    robotsPolicyCache.set(origin, pending);
+  }
+  return pending;
+}
+
+async function fetchSourcePage(url: string, sourceKind: SourcePage["sourceKind"], linkedFrom?: string, homepageContentHash?: string): Promise<SourcePage | null> {
+  const policy = await robotsPolicy(url);
+  if (!policy.allowed) {
+    return {
+      url,
+      requestedUrl: url,
+      title: "",
+      text: "",
+      html: "",
+      contentHtml: "",
+      discoveredAt: new Date(),
+      sourceKind,
+      linkedFrom,
+      blocked: true,
+      blockReason: policy.reason || "robots.txt restricts automated access",
+    };
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
@@ -135,6 +187,7 @@ async function fetchSourcePage(url: string, sourceKind: SourcePage["sourceKind"]
     if (!response.ok) {
       return {
         url,
+        requestedUrl: url,
         title: "",
         text: "",
         html: "",
@@ -142,19 +195,56 @@ async function fetchSourcePage(url: string, sourceKind: SourcePage["sourceKind"]
         discoveredAt: new Date(),
         sourceKind,
         linkedFrom,
+        httpStatus: response.status,
         blocked: response.status === 401 || response.status === 403 || response.status === 429,
         blockReason: `Source returned HTTP ${response.status}`,
       };
     }
     const contentType = response.headers.get("content-type") || "";
-    if (!/(text\/html|application\/xhtml\+xml|application\/xml|text\/xml|application\/rss\+xml)/i.test(contentType)) return null;
+    if (!/(text\/html|application\/xhtml\+xml|application\/xml|text\/xml|application\/rss\+xml)/i.test(contentType)) {
+      return {
+        url: response.url || url,
+        requestedUrl: url,
+        title: "",
+        text: "",
+        html: "",
+        contentHtml: "",
+        discoveredAt: new Date(),
+        sourceKind,
+        linkedFrom,
+        httpStatus: response.status,
+        blockReason: `Source returned non-document content type ${contentType || "unknown"}`,
+      };
+    }
     const html = (await response.text()).slice(0, MAX_PAGE_BYTES);
     const $ = cheerio.load(html);
     const title = $("title").first().text().replace(/\s+/g, " ").trim();
     const { contentHtml, text } = cleanSourceContent(html);
+    const finalUrl = response.url || url;
+    const finalPolicy = new URL(finalUrl).origin === new URL(url).origin ? policy : await robotsPolicy(finalUrl);
+    if (!finalPolicy.allowed) {
+      return {
+        url: finalUrl,
+        requestedUrl: url,
+        title: "",
+        text: "",
+        html: "",
+        contentHtml: "",
+        discoveredAt: new Date(),
+        sourceKind,
+        linkedFrom,
+        httpStatus: response.status,
+        blocked: true,
+        blockReason: finalPolicy.reason || "robots.txt restricts automated access on redirected host",
+      };
+    }
     const blockReason = isBlockPage(title, text);
+    const contentHash = sourceHash(text);
+    const requestedPath = new URL(url).pathname.replace(/\/$/, "") || "/";
+    const homepagePath = new URL(linkedFrom || url).pathname.replace(/\/$/, "") || "/";
     return {
-      url: response.url || url,
+      url: finalUrl,
+      requestedUrl: url,
       title,
       text,
       html,
@@ -162,12 +252,15 @@ async function fetchSourcePage(url: string, sourceKind: SourcePage["sourceKind"]
       discoveredAt: new Date(),
       sourceKind,
       linkedFrom,
+      httpStatus: response.status,
+      softNotFound: Boolean(homepageContentHash && requestedPath !== homepagePath && contentHash === homepageContentHash),
       blocked: Boolean(blockReason),
       blockReason: blockReason || undefined,
     };
   } catch (error) {
     return {
       url,
+      requestedUrl: url,
       title: "",
       text: "",
       html: "",
@@ -176,6 +269,7 @@ async function fetchSourcePage(url: string, sourceKind: SourcePage["sourceKind"]
       sourceKind,
       linkedFrom,
       blocked: false,
+      fetchError: error instanceof Error ? error.message : "Source request failed",
       blockReason: error instanceof Error ? error.message : "Source request failed",
     };
   } finally {
@@ -247,6 +341,7 @@ export async function buildSourceManifest(homepageUrl: string): Promise<SourceMa
   if (!canonicalHomepage) throw new Error("Invalid source URL");
   const rootHostname = new URL(canonicalHomepage).hostname;
   const homepage = await fetchSourcePage(canonicalHomepage, "homepage");
+  const homepageContentHash = homepage?.text ? sourceHash(homepage.text) : undefined;
   const moduleCandidates: Record<IntelligenceModule, string[]> = {
     people: [],
     news: [],
@@ -310,19 +405,27 @@ export async function buildSourceManifest(homepageUrl: string): Promise<SourceMa
   const orderedCandidates = [...selectedCandidates]
     .filter((url) => firstPartyHost(new URL(url).hostname, rootHostname));
 
-  const fetchedPages = await boundedMap(orderedCandidates, async (url) => fetchSourcePage(url, "first_party", canonicalHomepage));
+  const fetchedPages = await boundedMap(orderedCandidates, async (url) => fetchSourcePage(url, "first_party", canonicalHomepage, homepageContentHash));
   for (const page of fetchedPages) {
     if (!page) continue;
-    if (page.title || page.text || page.blocked) pages.push(page);
-    if (page.blocked) blockedUrls[page.url] = page.blockReason || "Source restricts automated access";
-    for (const module of moduleMatches(page.url)) moduleCandidates[module].push(page.url);
+    pages.push(page);
+    if (page.blocked) {
+      const reason = page.blockReason || "Source restricts automated access";
+      blockedUrls[page.requestedUrl || page.url] = reason;
+      blockedUrls[page.url] = reason;
+    }
+    for (const module of moduleMatches(page.requestedUrl || page.url)) moduleCandidates[module].push(page.requestedUrl || page.url);
   }
 
-  const atsPages = await boundedMap(atsCandidates.slice(0, MAX_ATS_PAGES), async ({ url, linkedFrom }) => fetchSourcePage(url, "ats", linkedFrom));
+  const atsPages = await boundedMap(atsCandidates.slice(0, MAX_ATS_PAGES), async ({ url, linkedFrom }) => fetchSourcePage(url, "ats", linkedFrom, homepageContentHash));
   for (const page of atsPages) {
     if (!page) continue;
-    if (page.title || page.text || page.blocked) pages.push(page);
-    if (page.blocked) blockedUrls[page.url] = page.blockReason || "Source restricts automated access";
+    pages.push(page);
+    if (page.blocked) {
+      const reason = page.blockReason || "Source restricts automated access";
+      blockedUrls[page.requestedUrl || page.url] = reason;
+      blockedUrls[page.url] = reason;
+    }
   }
 
   for (const module of Object.keys(moduleCandidates) as IntelligenceModule[]) {

@@ -122,6 +122,53 @@ function sanitizeFilename(url: string, index: number): string {
   }
 }
 
+// ─── Render-readiness helpers ──────────────────────────────────────────────────
+
+async function waitForPostNavigationStability(page: any, timeoutMs = 3000): Promise<void> {
+  await page.evaluate(async (maximumWait: number) => {
+    const nextPaint = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const fonts = (document as any).fonts?.ready ? Promise.resolve((document as any).fonts.ready).catch(() => undefined) : Promise.resolve();
+    const quietDom = new Promise<void>((resolve) => {
+      let quietTimer: number | undefined;
+      const observer = new MutationObserver(() => {
+        if (quietTimer) clearTimeout(quietTimer);
+        quietTimer = window.setTimeout(done, 250);
+      });
+      const done = () => { if (quietTimer) clearTimeout(quietTimer); observer.disconnect(); resolve(); };
+      observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+      quietTimer = window.setTimeout(done, 250);
+    });
+    await Promise.race([Promise.all([fonts, quietDom, nextPaint()]), new Promise<void>((resolve) => setTimeout(resolve, maximumWait))]);
+  }, timeoutMs).catch(() => {});
+}
+
+async function waitForPaint(page: any, timeoutMs = 500): Promise<void> {
+  await page.evaluate(async (maximumWait: number) => {
+    const painted = new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    await Promise.race([painted, new Promise<void>((resolve) => setTimeout(resolve, maximumWait))]);
+  }, timeoutMs).catch(() => {});
+}
+
+async function waitForLazyContent(page: any, timeoutMs = 1500): Promise<void> {
+  await page.evaluate(async (maximumWait: number) => {
+    const ready = new Promise<void>((resolve) => {
+      const started = performance.now();
+      let previousHeight = document.documentElement.scrollHeight;
+      let stablePasses = 0;
+      const check = () => {
+        const imagesReady = Array.from(document.images).every((image) => image.complete);
+        const height = document.documentElement.scrollHeight;
+        stablePasses = height === previousHeight ? stablePasses + 1 : 0;
+        previousHeight = height;
+        if ((imagesReady && stablePasses >= 2) || performance.now() - started >= maximumWait) return resolve();
+        setTimeout(check, 100);
+      };
+      check();
+    });
+    await Promise.race([ready, new Promise<void>((resolve) => setTimeout(resolve, maximumWait))]);
+  }, timeoutMs).catch(() => {});
+}
+
 // ─── Main extractor ───────────────────────────────────────────────────────────
 
 export async function extractDom(
@@ -207,12 +254,9 @@ export async function extractDom(
       console.warn("[extractDom] networkidle2 timeout (continuing with current state):", (e as Error).message);
     }
 
-    // ── FIX 2: Extended settle time after navigation ──────────────────────────
-    // Give CSS-in-JS an extra 3 seconds to finish injecting styles after network
-    // settles. This covers slow hydration on Shopify Hydrogen, Next.js, etc.
-    // After load, forcibly remove any pop-up/modal/overlay elements still visible.
-    // This catches pop-ups that fire on a timer or ignore localStorage flags.
-    await new Promise((r) => setTimeout(r, 3000));
+    // Wait for fonts, two paints, and a short DOM-quiet window; retain 3s only as
+    // the cap for slow hydration rather than waiting three seconds unconditionally.
+    await waitForPostNavigationStability(page, 3000);
     await page.evaluate(() => {
       const selectors = [
         // Generic overlay/modal patterns
@@ -266,7 +310,8 @@ export async function extractDom(
       document.documentElement.style.overflow = "auto";
     }).catch(() => {}); // Non-fatal — continue even if this fails
 
-    await new Promise((r) => setTimeout(r, 500));
+    // Overlay display mutations need a paint, not an unconditional half-second pause.
+    await waitForPaint(page, 500);
 
     emit?.({ type: "status", step: 2, total: 6, message: "Scanning colors and fonts..." });
 
@@ -291,7 +336,8 @@ export async function extractDom(
       console.warn("[extractDom] Scroll interrupted (non-fatal):", e.message);
     });
 
-    await new Promise((r) => setTimeout(r, 1500));
+    // Wait for lazy assets and layout stability; retain 1.5s as a safety cap.
+    await waitForLazyContent(page, 1500);
 
     // Full-page screenshot for Claude Vision classification step
     // In hybrid mode, use the externally-provided screenshot instead of taking one with Puppeteer.

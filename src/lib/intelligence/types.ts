@@ -6,7 +6,13 @@ export type IntelligenceModule =
   | "integrations"
   | "productPricing";
 
-export type ModuleStatusKind = "published" | "not_published" | "blocked" | "unavailable";
+export type ModuleStatusKind =
+  | "published"
+  | "blocked"
+  | "source_not_found"
+  | "source_found_unparsed"
+  | "source_empty"
+  | "unavailable";
 
 export interface ModuleStatus {
   status: ModuleStatusKind;
@@ -38,7 +44,10 @@ export interface EvidenceReference {
 }
 
 export interface SourcePage {
+  /** Final URL after redirects. */
   url: string;
+  /** URL requested by Orb before redirects; used for reliable per-module source state. */
+  requestedUrl?: string;
   title: string;
   text: string;
   html: string;
@@ -49,6 +58,12 @@ export interface SourcePage {
   blocked?: boolean;
   blockReason?: string;
   linkedFrom?: string;
+  /** A successful route that serves the canonical homepage rather than its requested content. */
+  softNotFound?: boolean;
+  /** HTTP status is retained for source-state diagnostics and evidence quality. */
+  httpStatus?: number;
+  /** Transport failure separate from a valid but non-content source response. */
+  fetchError?: string;
 }
 
 export interface SourceManifest {

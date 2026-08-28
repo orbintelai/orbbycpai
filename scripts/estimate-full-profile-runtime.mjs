@@ -1,5 +1,7 @@
 const measured = {
-  renderedExtractionSeconds: 45.509,
+  // Eight-domain serial extractDom measurement: 15.134–46.085s, median 31.918s.
+  renderedExtractionSeconds: 31.918,
+  // One bounded first-party source-collection smoke test; still an assumption pending serial module telemetry.
   sourceCollectionSeconds: 16.686,
 };
 
@@ -23,4 +25,4 @@ const result = Object.fromEntries(Object.entries(scenarios).map(([name, value]) 
   }];
 }));
 
-console.log(JSON.stringify({ measured, scenarios: result, methodology: "Rendered extraction and source collection are locally measured against preply.com. Source collection and perception run concurrently only after brand classification, so the critical path uses their maximum rather than their sum." }, null, 2));
+console.log(JSON.stringify({ measured, scenarios: result, methodology: "Rendered extraction uses the median of eight serial extractDom-only measurements: hubspot.com, dropbox.com, flex.one, richpanel.com, anagram.io, paessler.com, tylermatheny.com, and yana.company (15.134–46.085s; median 31.918s; 0 networkidle2 timeouts). Source collection remains a one-site smoke-test estimate. Source collection and perception run concurrently only after brand classification, so the critical path uses their maximum rather than their sum." }, null, 2));

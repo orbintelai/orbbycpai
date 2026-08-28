@@ -63,21 +63,48 @@ function evidence(
   };
 }
 
-function relevantPages(manifest: SourceManifest, module: IntelligenceModule): SourcePage[] {
+function attemptedPages(manifest: SourceManifest, module: IntelligenceModule): SourcePage[] {
   const candidates = new Set(manifest.moduleCandidates[module]);
-  const pages = manifest.pages.filter((page) => candidates.has(page.url) || page.sourceKind === "homepage" && module === "productPricing");
-  return pages.filter((page) => !page.blocked && Boolean(page.text));
+  return manifest.pages.filter((page) => candidates.has(page.requestedUrl || page.url) || candidates.has(page.url) || page.sourceKind === "homepage" && module === "productPricing");
+}
+
+function relevantPages(manifest: SourceManifest, module: IntelligenceModule): SourcePage[] {
+  return attemptedPages(manifest, module).filter((page) => !page.blocked && !page.softNotFound && Boolean(page.text));
 }
 
 function statusFor(module: IntelligenceModule, manifest: SourceManifest, startedAt: number, found: boolean, reason: string): ModuleStatus {
   const crawledUrls = manifest.moduleCandidates[module];
-  const blocked = crawledUrls.some((url) => Boolean(manifest.blockedUrls[url]));
-  return {
-    status: found ? "published" : blocked ? "blocked" : "not_published",
-    reason: found ? "First-party data published by the company." : blocked ? "Relevant source page restricts automated access." : reason,
-    crawledUrls,
-    durationMs: Date.now() - startedAt,
-  };
+  const attempted = attemptedPages(manifest, module);
+  const contentPages = attempted.filter((page) => !page.blocked && !page.softNotFound && Boolean(page.text));
+  const blocked = attempted.length > 0 && attempted.every((page) => Boolean(page.blocked));
+  const onlySoftNotFound = attempted.length > 0 && attempted.every((page) => Boolean(page.softNotFound) || page.httpStatus === 404);
+  const emptySource = attempted.some((page) => !page.blocked && !page.softNotFound && page.httpStatus && page.httpStatus >= 200 && page.httpStatus < 300 && !page.text);
+  const unavailable = attempted.some((page) => Boolean(page.fetchError) || Boolean(page.httpStatus && page.httpStatus >= 500));
+  const status = found
+    ? "published"
+    : blocked
+      ? "blocked"
+      : onlySoftNotFound || attempted.length === 0
+        ? "source_not_found"
+        : unavailable
+          ? "unavailable"
+          : emptySource
+            ? "source_empty"
+            : contentPages.length > 0
+              ? "source_found_unparsed"
+              : "source_not_found";
+  const statusReason = found
+    ? "First-party data published by the company."
+    : blocked
+      ? "Relevant source page restricts automated access."
+      : onlySoftNotFound || attempted.length === 0
+        ? reason
+        : unavailable
+          ? "A candidate first-party source could not be retrieved reliably; this is a limitation of the run."
+          : emptySource
+            ? "A candidate first-party source was found but exposed no extractable document content; this is a limitation of the run."
+            : "A candidate first-party source was found but its published structure could not be interpreted; this is a limitation of the run.";
+  return { status, reason: statusReason, crawledUrls, durationMs: Date.now() - startedAt };
 }
 
 function parseJsonLd(page: SourcePage): unknown[] {
@@ -157,26 +184,34 @@ export function extractNews(manifest: SourceManifest): ModuleResult<NewsSignal[]
   const evidenceDrafts: EvidenceDraft[] = [];
   for (const page of relevantPages(manifest, "news")) {
     const $ = cheerio.load(page.contentHtml || page.html);
-    $("article").each((_, article) => {
-      const root = $(article);
-      const headline = root.find("h1,h2,h3,h4,a").first().text().replace(/\s+/g, " ").trim();
-      const href = root.find("a[href]").first().attr("href");
-      const dateValue = root.find("time").first().attr("datetime") || root.find("time").first().text();
+    const publish = (anchor: any) => {
+      const link = $(anchor);
+      const href = link.attr("href");
+      if (!href) return;
+      // Newsrooms commonly use heading/div cards rather than semantic article elements.
+      // Keep the nearest bounded card so footer/navigation links cannot become news.
+      let root = link.closest("article, li, [class*='card'], [class*='post'], [class*='news'], [class*='press'], [data-testid*='card']").first();
+      if (!root.length) root = link.parent();
+      const heading = root.find("h1,h2,h3,h4,h5").first().text().replace(/\s+/g, " ").trim();
+      const headline = (heading || link.text()).replace(/\s+/g, " ").trim();
       const text = root.text().replace(/\s+/g, " ").trim();
-      if (headline.length < 6 || !href || text.length < headline.length + 12) return;
-      const url = new URL(href, page.url).toString();
+      const dateValue = root.find("time").first().attr("datetime") || root.find("time").first().text()
+        || root.find("[class*='date'], [class*='Date']").first().text();
+      if (headline.length < 6 || text.length < headline.length + 12 || !parseDate(dateValue)) return;
+      let url: string;
+      try { url = new URL(href, page.url).toString(); } catch { return; }
+      if (items.has(url)) return;
       const summary = textExcerpt(text.replace(headline, ""), 260);
-      const key = url;
-      if (items.has(key)) return;
-      const ref = evidence("news", "news_item", key, "news", page, text);
+      const ref = evidence("news", "news_item", url, "news", page, text);
       evidenceDrafts.push(ref.draft);
-      items.set(key, { headline, publishedAt: parseDate(dateValue), url, summary, label: newsLabel(`${headline} ${summary}`), evidence: [ref.reference] });
-    });
+      items.set(url, { headline, publishedAt: parseDate(dateValue), url, summary, label: newsLabel(`${headline} ${summary}`), evidence: [ref.reference] });
+    };
+    $("article a[href], h1 a[href], h2 a[href], h3 a[href], h4 a[href], h5 a[href]").each((_, anchor) => publish(anchor));
   }
   const value = [...items.values()]
     .sort((a, b) => (b.publishedAt || "").localeCompare(a.publishedAt || ""))
     .slice(0, 10);
-  return { value, evidence: evidenceDrafts, status: statusFor("news", manifest, startedAt, value.length > 0, "No first-party news published in the last 12 months.") };
+  return { value, evidence: evidenceDrafts, status: statusFor("news", manifest, startedAt, value.length > 0, "No qualifying first-party news source was found.") };
 }
 
 interface NormalizedJob {

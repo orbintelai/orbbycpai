@@ -4,7 +4,8 @@ export type IntelligenceModule =
   | "hiring"
   | "compliance"
   | "integrations"
-  | "productPricing";
+  | "productPricing"
+  | "techStack";
 
 export type ModuleStatusKind = "published" | "not_published" | "blocked" | "unavailable";
 
@@ -94,6 +95,13 @@ export interface IntegrationSignal {
   evidence: EvidenceReference[];
 }
 
+export interface TechnologySignal {
+  name: string;
+  category: "Ecommerce" | "Analytics" | "Support" | "Marketing" | "CDP" | "Payments" | "CRM" | "Framework" | "CDN" | "Tag Manager";
+  artifact: string;
+  evidence: EvidenceReference[];
+}
+
 export interface ProductPricingSignal {
   productClaims: string[];
   targetCustomerClaims: string[];
@@ -116,6 +124,8 @@ export interface CompanyIntelligence {
   compliance?: ComplianceClaim[];
   integrations?: IntegrationSignal[];
   productPricing?: ProductPricingSignal;
+  /** Tier 1 detection from artifacts rendered by the target's own live site. */
+  techStack?: TechnologySignal[];
   moduleStatuses: Record<IntelligenceModule, ModuleStatus>;
 }
 

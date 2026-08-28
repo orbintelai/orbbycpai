@@ -167,7 +167,7 @@ async function extractFreshProfile(input: { url: string; userId: string; email: 
     const brandName = profile.meta?.brandName || normalizeDomain(normalizedUrl);
     const [perception, intelligence] = await Promise.all([
       fetchAiPerception(brandName, normalizedUrl, scrapedContext || undefined),
-      runCompanyIntelligence(normalizedUrl),
+      runCompanyIntelligence(normalizedUrl, rawTyped),
     ]);
     profile.aiPerception = perception;
     profile.companyIntelligence = intelligence.intelligence;

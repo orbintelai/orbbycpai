@@ -19,6 +19,7 @@ const NESTED_PROBE_PATHS: Record<IntelligenceModule, string[]> = {
   compliance: ["trust/security", "trust/compliance", "legal/privacy"],
   integrations: ["product/integrations", "platform/integrations", "partners/marketplace"],
   productPricing: ["products/platform", "platform/pricing", "solutions/platform"],
+  techStack: [],
 };
 
 const PATH_PATTERNS: Record<IntelligenceModule, RegExp[]> = {
@@ -30,6 +31,7 @@ const PATH_PATTERNS: Record<IntelligenceModule, RegExp[]> = {
   compliance: [/\/(security|trust|privacy|compliance|legal)(\/|$)/i],
   integrations: [/\/(integrations|marketplace|apps)(\/|$)/i],
   productPricing: [/\/(product|platform|solutions|pricing)(\/|$)/i],
+  techStack: [],
 };
 
 const ATS_HOSTS = /(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com)$/i;
@@ -220,7 +222,7 @@ async function boundedMap<T, R>(values: T[], mapper: (value: T) => Promise<R>): 
 function selectFairCandidates(moduleCandidates: Record<IntelligenceModule, string[]>): string[] {
   const selected = new Set<string>();
   const allocated: Record<IntelligenceModule, number> = {
-    people: 0, news: 0, hiring: 0, compliance: 0, integrations: 0, productPricing: 0,
+    people: 0, news: 0, hiring: 0, compliance: 0, integrations: 0, productPricing: 0, techStack: 0,
   };
   for (let round = 0; round < MAX_FIRST_PARTY_PAGES_PER_MODULE && selected.size < MAX_FIRST_PARTY_PAGES; round += 1) {
     let selectedInRound = false;
@@ -254,6 +256,7 @@ export async function buildSourceManifest(homepageUrl: string): Promise<SourceMa
     compliance: [],
     integrations: [],
     productPricing: [],
+    techStack: [],
   };
   const blockedUrls: Record<string, string> = {};
   const pages: SourcePage[] = [];

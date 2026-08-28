@@ -744,6 +744,16 @@ window.__orbExtract = function () {
     techSignals.push("AI/ML layer detected");
   }
 
+  // Persist raw, privacy-safe artifacts for the separate Company Intelligence
+  // Tech Stack module. Values from cookies are never retained—only cookie names.
+  var techArtifacts = {
+    scriptUrls: scriptSrcs.filter(Boolean).slice(0, 120),
+    generators: Array.from(document.querySelectorAll('meta[name="generator"]')).map(function (meta) { return meta.content || ''; }).filter(Boolean).slice(0, 12),
+    cookieNames: document.cookie.split(';').map(function (cookie) { return cookie.trim().split('=')[0]; }).filter(Boolean).slice(0, 60),
+    globals: ['Shopify', 'dataLayer', 'Intercom', 'analytics', 'hj', 'fbq', 'OneSignal', '__NEXT_DATA__', '__NUXT__', 'Sentry', 'mixpanel', 'segment'].filter(function (name) { return name in window; }),
+    networkHosts: Array.from(performance.getEntriesByType('resource')).map(function (entry) { try { return new URL(entry.name).hostname; } catch (e) { return null; } }).filter(Boolean).filter(function (host, index, values) { return values.indexOf(host) === index; }).slice(0, 120)
+  };
+
   // ═══════════════════════════════════════════════════════════════════════
   // SPATIAL & SHAPE
   // ═══════════════════════════════════════════════════════════════════════
@@ -798,6 +808,7 @@ window.__orbExtract = function () {
     bgImages: bgImages,
     brandAssetImages: brandAssetImages,
     techSignals: techSignals,
+    techArtifacts: techArtifacts,
     spatial: spatial,
     colorSamples: scoredPalette.map(function (c) { return { hex: c.hex, contexts: c.sources, count: c.score }; }),
     logoImgs: logo && logo.type === "img" ? [{ src: logo.src, alt: logo.alt, width: logo.width, height: logo.height }] : [],

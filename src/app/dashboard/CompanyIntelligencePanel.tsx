@@ -10,9 +10,10 @@ const LABELS: Record<IntelligenceModule, string> = {
   compliance: "Compliance & Trust",
   integrations: "Integrations",
   productPricing: "Product & Pricing",
+  techStack: "Tech Stack",
 };
 
-const MODULES: IntelligenceModule[] = ["productPricing", "integrations", "news", "people", "hiring", "compliance"];
+const MODULES: IntelligenceModule[] = ["productPricing", "techStack", "integrations", "news", "people", "hiring", "compliance"];
 
 const cardStyle: React.CSSProperties = {
   border: "1px solid rgba(255,255,255,0.08)",
@@ -97,6 +98,8 @@ export function CompanyIntelligencePanel({ profile, generationId }: { profile: {
           {intel.productPricing?.productClaims.length || intel.productPricing?.pricingStatement ? <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: 20, alignItems: "start" }}><div><div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 7 }}>Published product claims</div><div style={{ display: "flex", flexDirection: "column", gap: 6 }}>{intel.productPricing?.productClaims.slice(0, 6).map((claim) => <div key={claim} style={{ color: "rgba(255,255,255,0.68)", fontSize: 12, lineHeight: 1.45 }}>• {claim}<EvidenceLinks items={intel.productPricing?.claimEvidence?.[claim]} /></div>)}</div></div><div><div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 7 }}>Pricing / conversion</div><div style={{ color: "rgba(255,255,255,0.68)", fontSize: 12, lineHeight: 1.5 }}>{intel.productPricing?.pricingStatement || "No public pricing statement found."}<EvidenceLinks items={intel.productPricing?.pricingEvidence || intel.productPricing?.evidence} /></div>{intel.productPricing?.primaryCta && <div style={{ color: "#50e3c2", fontSize: 11, marginTop: 10 }}>Primary CTA: {intel.productPricing.primaryCta}</div>}</div></div> : <BlockedModule status={statuses.productPricing} />}
         </ModuleCard>
       )}
+
+      {visible("techStack", Boolean(intel.techStack?.length)) && <ModuleCard module="techStack" status={statuses.techStack}>{intel.techStack?.length ? <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>{intel.techStack.map((technology) => <div key={`${technology.category}-${technology.name}`} title={technology.artifact} style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "6px 8px", borderRadius: 7, border: "1px solid rgba(80,227,194,0.17)", background: "rgba(80,227,194,0.045)" }}><span style={{ color: "rgba(255,255,255,0.78)", fontSize: 11, fontWeight: 650 }}>{technology.name}</span><span style={{ color: "#50e3c2", fontSize: 9, letterSpacing: "0.04em", textTransform: "uppercase" }}>{technology.category}</span><EvidenceLinks items={technology.evidence} /></div>)}</div> : <BlockedModule status={statuses.techStack} />}</ModuleCard>}
 
       {(visible("integrations", Boolean(intel.integrations?.length)) || visible("news", Boolean(intel.news?.length))) && <div style={{ display: "grid", gridTemplateColumns: "1.15fr 0.85fr", gap: 16, alignItems: "start" }}>
         {visible("integrations", Boolean(intel.integrations?.length)) && <ModuleCard module="integrations" status={statuses.integrations}>{intel.integrations?.length ? <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>{intel.integrations.slice(0, 30).map((integration) => <a key={integration.name} href={integration.url || "#"} target="_blank" rel="noreferrer" title={integration.evidence?.[0]?.excerpt || integration.name} style={{ textDecoration: "none", fontSize: 11, border: "1px solid rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.65)", background: "rgba(255,255,255,0.04)", borderRadius: 7, padding: "6px 8px" }}>{integration.name}</a>)}</div> : <BlockedModule status={statuses.integrations} />}</ModuleCard>}

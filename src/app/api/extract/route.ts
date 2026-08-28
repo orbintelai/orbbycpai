@@ -48,6 +48,7 @@ function emptyIntelligence(reason: string): IntelligenceRunResult {
     compliance: { ...unavailable },
     integrations: { ...unavailable },
     productPricing: { ...unavailable },
+    techStack: { ...unavailable },
   };
   return {
     intelligence: {
@@ -156,7 +157,7 @@ export async function POST(req: NextRequest) {
         emit({ type: "status", step: 7, total: 9, message: "Collecting first-party company signals and AI perception..." });
         const [aiPerception, intelligenceResult] = await Promise.all([
           fetchAiPerception(brandName, normalizedUrl, scrapedContext || undefined),
-          runCompanyIntelligence(normalizedUrl).catch((error) => {
+          runCompanyIntelligence(normalizedUrl, rawTyped).catch((error) => {
             console.error("[extract] company intelligence branch failed", error);
             return emptyIntelligence("Source-backed intelligence could not be collected for this run.");
           }),

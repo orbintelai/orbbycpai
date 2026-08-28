@@ -402,7 +402,8 @@ export async function runSourceModules(manifest: SourceManifest): Promise<{ inte
     Promise.resolve(extractIntegrations(manifest)),
     Promise.resolve(extractProductPricing(manifest)),
   ]);
-  const results = { people, news, hiring, compliance, integrations, productPricing };
+  const techStack = { value: [] as import("./types").TechnologySignal[], evidence: [] as EvidenceDraft[], status: { status: "unavailable" as const, reason: "Tech Stack requires the live rendered page artifacts.", crawledUrls: [], durationMs: 0 } };
+  const results = { people, news, hiring, compliance, integrations, productPricing, techStack };
   return {
     intelligence: {
       version: "v1",
@@ -414,6 +415,7 @@ export async function runSourceModules(manifest: SourceManifest): Promise<{ inte
       compliance: compliance.value,
       integrations: integrations.value,
       productPricing: productPricing.value,
+      techStack: techStack.value,
       moduleStatuses: {
         people: people.status,
         news: news.status,
@@ -421,6 +423,7 @@ export async function runSourceModules(manifest: SourceManifest): Promise<{ inte
         compliance: compliance.status,
         integrations: integrations.status,
         productPricing: productPricing.status,
+        techStack: techStack.status,
       },
     },
     evidence: Object.values(results).flatMap((result) => result.evidence),

@@ -774,8 +774,15 @@ window.__orbExtract = function () {
   // OUTPUT
   // ═══════════════════════════════════════════════════════════════════════
 
+  var canonicalLink = document.querySelector("link[rel='canonical']");
+  var canonicalUrl = canonicalLink && canonicalLink.getAttribute("href") ? canonicalLink.getAttribute("href") : null;
+  if (canonicalUrl) {
+    try { canonicalUrl = new URL(canonicalUrl, window.location.href).href; } catch (e) { canonicalUrl = null; }
+  }
+
   return {
     url: window.location.href,
+    canonicalUrl: canonicalUrl,
     title: document.title,
     brandName: brandName,
     ogTitle: ogTitle,

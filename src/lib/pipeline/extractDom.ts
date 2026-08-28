@@ -246,8 +246,9 @@ export async function extractDom(
     // domcontentloaded fires before CSS-in-JS frameworks (Next.js/Tailwind) have
     // injected their styles. networkidle2 waits until network activity settles,
     // giving JS time to apply computed styles before we extract them.
+    let navigationResponse: Awaited<ReturnType<typeof page.goto>> | null = null;
     try {
-      await page.goto(url, { waitUntil: "networkidle2", timeout: 45000 });
+      navigationResponse = await page.goto(url, { waitUntil: "networkidle2", timeout: 45000 });
     } catch (e) {
       // networkidle2 can time out on sites with persistent background requests
       // (analytics pings, websockets). Fall back to domcontentloaded result.
@@ -426,6 +427,11 @@ export async function extractDom(
     }
 
     console.log("[extractDom] Extraction complete");
+
+    const redirectChain = navigationResponse?.request().redirectChain().map((request: { url(): string }) => request.url()) || [];
+    const finalPageUrl = page.url();
+    if (redirectChain.length === 0 || redirectChain[redirectChain.length - 1] !== finalPageUrl) redirectChain.push(finalPageUrl);
+    raw = { ...raw, resolvedUrl: finalPageUrl, redirectChain };
 
     const rawPath = path.join(workDir, "raw_dom_data.json");
     fs.writeFileSync(rawPath, JSON.stringify(raw, null, 2));

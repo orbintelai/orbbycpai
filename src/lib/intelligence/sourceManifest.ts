@@ -2,6 +2,7 @@ import * as crypto from "crypto";
 import * as cheerio from "cheerio";
 import robotsParser from "robots-parser";
 import type { IntelligenceModule, SourceManifest, SourcePage } from "./types";
+import { isSameRegistrableDomain } from "./lineage";
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_PAGE_BYTES = 1_500_000;
@@ -103,8 +104,7 @@ function normaliseUrl(value: string, base?: string): string | null {
 }
 
 function firstPartyHost(hostname: string, rootHostname: string): boolean {
-  const withoutWww = (value: string) => value.replace(/^www\./i, "");
-  return withoutWww(hostname) === withoutWww(rootHostname);
+  return isSameRegistrableDomain(`https://${hostname}`, `https://${rootHostname}`);
 }
 
 function isBlockPage(title: string, body: string): string | null {

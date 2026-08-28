@@ -1,8 +1,8 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/auth";
 import { db } from "@/db";
-import { analysisEvidence, generations } from "@/db/schema";
-import { and, desc, eq } from "drizzle-orm";
+import { analysisEvidence, domainLineageAliases, generations } from "@/db/schema";
+import { and, desc, eq, isNotNull } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as os from "os";
@@ -12,6 +12,7 @@ import { classifyBrand } from "@/lib/pipeline/classifyBrand";
 import { fetchAiPerception } from "@/lib/pipeline/fetchAiPerception";
 import { runCompanyIntelligence } from "@/lib/intelligence/runCompanyIntelligence";
 import type { CompanyIntelligence, IntelligenceRunResult } from "@/lib/intelligence/types";
+import { buildSnapshotLineage } from "@/lib/intelligence/lineage";
 import {
   AccountLimitError,
   PlatformCapacityError,
@@ -134,6 +135,13 @@ export async function POST(req: NextRequest) {
         emit({ type: "status", step: 1, total: 9, message: "Reading the company homepage..." });
         const raw = await extractDom(normalizedUrl, workDir, emit);
         const rawTyped = raw as Record<string, unknown>;
+        const lineage = buildSnapshotLineage({
+          submittedUrl: normalizedUrl,
+          resolvedUrl: rawTyped.resolvedUrl || rawTyped.url,
+          declaredCanonicalUrl: rawTyped.canonicalUrl,
+          redirectChain: rawTyped.redirectChain,
+        });
+        const snapshotDomain = lineage.registrableDomain || domain;
         const downloadedAssets = (rawTyped.downloadedAssets as Array<{ src: string; localPath: string; localUrl: string; alt: string; width: number; height: number; ext: string; isGif: boolean; inHero: boolean }>) || [];
         rawTyped.downloadedAssets = downloadedAssets
           .map((asset) => ({ ...asset, localUrl: fileToDataUri(asset.localPath) || asset.src }))
@@ -175,7 +183,13 @@ export async function POST(req: NextRequest) {
           const previous = await db
             .select({ id: generations.id, snapshotVersion: generations.snapshotVersion })
             .from(generations)
-            .where(and(eq(generations.domain, domain), eq(generations.status, "complete")))
+            .where(and(
+              lineage.registrableDomain
+                ? eq(generations.registrableDomain, lineage.registrableDomain)
+                : eq(generations.domain, snapshotDomain),
+              isNotNull(generations.snapshotVersion),
+              eq(generations.status, "complete"),
+            ))
             .orderBy(desc(generations.snapshotVersion), desc(generations.completedAt))
             .limit(1);
           snapshotVersion = (previous[0]?.snapshotVersion || 0) + 1;
@@ -185,7 +199,13 @@ export async function POST(req: NextRequest) {
               .values({
                 userId,
                 brandUrl: normalizedUrl,
-                domain,
+                domain: snapshotDomain,
+                submittedUrl: lineage.submittedUrl,
+                resolvedUrl: lineage.resolvedUrl,
+                declaredCanonicalUrl: lineage.declaredCanonicalUrl,
+                registrableDomain: lineage.registrableDomain,
+                redirectChain: lineage.redirectChain,
+                lineageStatus: lineage.lineageStatus,
                 brandProfile: profile as unknown as Record<string, unknown>,
                 status: "complete",
                 runOrigin: "direct",
@@ -206,6 +226,19 @@ export async function POST(req: NextRequest) {
           }
         }
         if (!generation) throw new Error("Unable to allocate an immutable snapshot version.");
+
+        if (
+          lineage.lineageStatus === "cross_domain_redirect_pending" &&
+          lineage.submittedRegistrableDomain &&
+          lineage.registrableDomain
+        ) {
+          await db.insert(domainLineageAliases).values({
+            aliasRegistrableDomain: lineage.submittedRegistrableDomain,
+            canonicalRegistrableDomain: lineage.registrableDomain,
+            status: "pending",
+            firstGenerationId: generation.id,
+          }).onConflictDoNothing();
+        }
 
         if (intelligenceResult.evidence.length > 0) {
           await db.insert(analysisEvidence).values(intelligenceResult.evidence.map((item) => ({ ...item, generationId: generation.id })));

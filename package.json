@@ -31,6 +31,7 @@
     "robots-parser": "^3.0.1",
     "sharp": "^0.34.5",
     "stripe": "^20.4.1",
+    "tldts": "^7.4.11",
     "zod": "^4.3.6"
   },
   "devDependencies": {

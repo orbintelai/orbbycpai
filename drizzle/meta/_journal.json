@@ -22,6 +22,13 @@
       "when": 1787773372149,
       "tag": "0002_company_intelligence_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1787775200000,
+      "tag": "0003_canonical_lineage",
+      "breakpoints": true
     }
   ]
 }

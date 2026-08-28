@@ -128,7 +128,15 @@ export const generations = pgTable(
     id: uuid("id").defaultRandom().primaryKey(),
     userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     brandUrl: text("brand_url").notNull(),
+    // Legacy snapshot key retained for compatibility. New snapshots use the
+    // PSL-aware registrableDomain lineage key below.
     domain: text("domain"),
+    submittedUrl: text("submitted_url"),
+    resolvedUrl: text("resolved_url"),
+    declaredCanonicalUrl: text("declared_canonical_url"),
+    registrableDomain: text("registrable_domain"),
+    redirectChain: jsonb("redirect_chain"),
+    lineageStatus: text("lineage_status"),
     instagramUrl: text("instagram_url"),
     brandId: uuid("brand_id").references(() => brands.id, { onDelete: "set null" }),
     brandProfile: json("brand_profile"),
@@ -154,7 +162,29 @@ export const generations = pgTable(
     statusIdx: index("generations_status_idx").on(table.status),
     createdIdx: index("generations_created_at_idx").on(table.createdAt),
     domainCompletedIdx: index("generations_domain_completed_idx").on(table.domain, table.completedAt),
+    registrableDomainCompletedIdx: index("generations_registrable_domain_completed_idx").on(table.registrableDomain, table.completedAt),
     domainVersionIdx: unique("generations_domain_snapshot_version_unique").on(table.domain, table.snapshotVersion),
+  })
+);
+
+// ─── Cross-domain lineage aliases ────────────────────────────────────────────
+// Cross-domain redirects are never auto-merged. An admin confirmation creates
+// one durable alias record that groups future snapshots without rewriting history.
+export const domainLineageAliases = pgTable(
+  "domain_lineage_aliases",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    aliasRegistrableDomain: text("alias_registrable_domain").notNull().unique(),
+    canonicalRegistrableDomain: text("canonical_registrable_domain").notNull(),
+    status: text("status").notNull().default("pending"),
+    firstGenerationId: uuid("first_generation_id").references(() => generations.id, { onDelete: "set null" }),
+    confirmedByUserId: uuid("confirmed_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    confirmedAt: timestamp("confirmed_at", { mode: "date" }),
+    createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { mode: "date" }).defaultNow().notNull(),
+  },
+  (table) => ({
+    canonicalIdx: index("domain_lineage_aliases_canonical_idx").on(table.canonicalRegistrableDomain),
   })
 );
 

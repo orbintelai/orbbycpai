@@ -17,8 +17,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { db } from "@/db";
-import { analysisEvidence, generations } from "@/db/schema";
-import { and, eq, desc } from "drizzle-orm";
+import { analysisEvidence, domainLineageAliases, generations } from "@/db/schema";
+import { and, eq, desc, isNotNull } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as os from "os";
@@ -28,6 +28,7 @@ import { extractDom } from "@/lib/pipeline/runPipeline";
 import { classifyBrand, type BrandProfile } from "@/lib/pipeline/classifyBrand";
 import { fetchAiPerception } from "@/lib/pipeline/fetchAiPerception";
 import { runCompanyIntelligence } from "@/lib/intelligence/runCompanyIntelligence";
+import { buildSnapshotLineage } from "@/lib/intelligence/lineage";
 import { AccountLimitError, PlatformCapacityError, completeFullProfileUnit, releaseFullProfileUnit, reserveFullProfileUnit } from "@/lib/usage/circuitBreaker";
 
 export const runtime = "nodejs";
@@ -154,6 +155,12 @@ async function extractFreshProfile(input: { url: string; userId: string; email: 
   try {
     const raw = await extractDom(normalizedUrl, workDir, () => {});
     const rawTyped = raw as Record<string, unknown>;
+    const lineage = buildSnapshotLineage({
+      submittedUrl: normalizedUrl,
+      resolvedUrl: rawTyped.resolvedUrl || rawTyped.url,
+      declaredCanonicalUrl: rawTyped.canonicalUrl,
+      redirectChain: rawTyped.redirectChain,
+    });
     const pageTitle = (rawTyped.title as string | undefined) ?? "";
     const copyText0 = rawTyped.copyText as { h1?: string[] } | undefined;
     detectBlockPage(pageTitle, copyText0?.h1 ?? [], (rawTyped.bodySnippet as string | undefined) ?? "", normalizedUrl);
@@ -172,7 +179,7 @@ async function extractFreshProfile(input: { url: string; userId: string; email: 
     profile.aiPerception = perception;
     profile.companyIntelligence = intelligence.intelligence;
 
-    const domain = normalizeDomain(normalizedUrl);
+    const domain = lineage.registrableDomain || normalizeDomain(normalizedUrl);
     // The immutable ledger's unique key is global per domain. Re-read and retry
     // only when a concurrent report claims the same next snapshot version first.
     const completedAt = new Date();
@@ -180,13 +187,25 @@ async function extractFreshProfile(input: { url: string; userId: string; email: 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const previous = await db.select({ id: generations.id, snapshotVersion: generations.snapshotVersion })
         .from(generations)
-        .where(and(eq(generations.domain, domain), eq(generations.status, "complete")))
+        .where(and(
+          lineage.registrableDomain
+            ? eq(generations.registrableDomain, lineage.registrableDomain)
+            : eq(generations.domain, domain),
+          isNotNull(generations.snapshotVersion),
+          eq(generations.status, "complete"),
+        ))
         .orderBy(desc(generations.snapshotVersion), desc(generations.completedAt)).limit(1);
       try {
         const inserted = await db.insert(generations).values({
           userId: input.userId,
           brandUrl: normalizedUrl,
           domain,
+          submittedUrl: lineage.submittedUrl,
+          resolvedUrl: lineage.resolvedUrl,
+          declaredCanonicalUrl: lineage.declaredCanonicalUrl,
+          registrableDomain: lineage.registrableDomain,
+          redirectChain: lineage.redirectChain,
+          lineageStatus: lineage.lineageStatus,
           brandProfile: profile as unknown as Record<string, unknown>,
           status: "complete",
           runOrigin: "comparison",
@@ -206,6 +225,18 @@ async function extractFreshProfile(input: { url: string; userId: string; email: 
       }
     }
     if (!generation) throw new Error("Unable to allocate an immutable snapshot version.");
+    if (
+      lineage.lineageStatus === "cross_domain_redirect_pending" &&
+      lineage.submittedRegistrableDomain &&
+      lineage.registrableDomain
+    ) {
+      await db.insert(domainLineageAliases).values({
+        aliasRegistrableDomain: lineage.submittedRegistrableDomain,
+        canonicalRegistrableDomain: lineage.registrableDomain,
+        status: "pending",
+        firstGenerationId: generation.id,
+      }).onConflictDoNothing();
+    }
     if (intelligence.evidence.length) await db.insert(analysisEvidence).values(intelligence.evidence.map((item) => ({ ...item, generationId: generation.id })));
     try {
       await completeFullProfileUnit({ userId: input.userId, email: input.email, pool: reservation.pool, accountCounted: reservation.accountCounted });

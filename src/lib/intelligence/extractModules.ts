@@ -174,39 +174,74 @@ function newsLabel(text: string): NewsSignal["label"] {
 
 function parseDate(value: string | undefined): string | undefined {
   if (!value) return undefined;
-  const date = new Date(value);
+  const date = new Date(value.replace(/\s+/g, " ").trim());
   return Number.isNaN(date.valueOf()) ? undefined : date.toISOString();
+}
+
+function firstNewsCard($: cheerio.CheerioAPI, anchor: any) {
+  let current = $(anchor);
+  // Modern CMS directories commonly wrap a title link, image, and date in generic
+  // divs. Walk upward to the smallest bounded ancestor that carries a date instead
+  // of relying on article semantics or framework-specific class names.
+  for (let depth = 0; depth < 7 && current.length; depth += 1) {
+    const text = current.text().replace(/\s+/g, " ").trim();
+    const date = current.find("time, [datetime], [class*='date' i], [data-date], [data-published]").first();
+    const dateValue = date.attr("datetime") || date.attr("data-date") || date.attr("data-published") || date.text();
+    if (text.length >= 18 && text.length <= 1_800 && parseDate(dateValue)) return current;
+    current = current.parent();
+  }
+  return null;
 }
 
 export function extractNews(manifest: SourceManifest): ModuleResult<NewsSignal[]> {
   const startedAt = Date.now();
   const items = new Map<string, NewsSignal>();
   const evidenceDrafts: EvidenceDraft[] = [];
+  const publish = (page: SourcePage, headline: string, href: string, dateValue: string | undefined, body: string) => {
+    const publishedAt = parseDate(dateValue);
+    if (headline.length < 6 || body.length < headline.length + 12 || !publishedAt) return;
+    let url: string;
+    try {
+      url = new URL(href, page.url).toString();
+      // News entries must point to the same first-party registrable site as the
+      // source page, never to a press wire or external editorial reference.
+      if (new URL(url).hostname !== new URL(page.url).hostname) return;
+    } catch { return; }
+    if (items.has(url)) return;
+    const summary = textExcerpt(body.replace(headline, ""), 260);
+    const ref = evidence("news", "news_item", url, "news", page, body);
+    evidenceDrafts.push(ref.draft);
+    items.set(url, { headline, publishedAt, url, summary, label: newsLabel(`${headline} ${summary}`), evidence: [ref.reference] });
+  };
+
   for (const page of relevantPages(manifest, "news")) {
     const $ = cheerio.load(page.contentHtml || page.html);
-    const publish = (anchor: any) => {
+
+    // Prefer structured first-party newsroom content when it is published.
+    for (const item of parseJsonLd(page) as Array<Record<string, unknown>>) {
+      const type = String(item?.["@type"] || "").toLowerCase();
+      if (!/(newsarticle|article|blogposting)/.test(type)) continue;
+      const headline = String(item.headline || item.name || "").replace(/\s+/g, " ").trim();
+      const href = String(item.url || item.mainEntityOfPage || page.url);
+      const dateValue = String(item.datePublished || item.dateCreated || "");
+      const body = String(item.description || item.articleBody || headline).replace(/\s+/g, " ").trim();
+      publish(page, headline, href, dateValue, body);
+    }
+
+    // Capture both conventional heading links and cards whose heading is nested
+    // inside the anchor—common on HubSpot, press centers, and CMS grids.
+    $("a[href]").each((_, anchor) => {
       const link = $(anchor);
       const href = link.attr("href");
-      if (!href) return;
-      // Newsrooms commonly use heading/div cards rather than semantic article elements.
-      // Keep the nearest bounded card so footer/navigation links cannot become news.
-      let root = link.closest("article, li, [class*='card'], [class*='post'], [class*='news'], [class*='press'], [data-testid*='card']").first();
-      if (!root.length) root = link.parent();
-      const heading = root.find("h1,h2,h3,h4,h5").first().text().replace(/\s+/g, " ").trim();
+      if (!href || href.startsWith("#") || /^mailto:|^tel:/i.test(href)) return;
+      const card = firstNewsCard($, anchor);
+      if (!card) return;
+      const heading = card.find("h1,h2,h3,h4,h5,[role='heading']").first().text().replace(/\s+/g, " ").trim();
       const headline = (heading || link.text()).replace(/\s+/g, " ").trim();
-      const text = root.text().replace(/\s+/g, " ").trim();
-      const dateValue = root.find("time").first().attr("datetime") || root.find("time").first().text()
-        || root.find("[class*='date'], [class*='Date']").first().text();
-      if (headline.length < 6 || text.length < headline.length + 12 || !parseDate(dateValue)) return;
-      let url: string;
-      try { url = new URL(href, page.url).toString(); } catch { return; }
-      if (items.has(url)) return;
-      const summary = textExcerpt(text.replace(headline, ""), 260);
-      const ref = evidence("news", "news_item", url, "news", page, text);
-      evidenceDrafts.push(ref.draft);
-      items.set(url, { headline, publishedAt: parseDate(dateValue), url, summary, label: newsLabel(`${headline} ${summary}`), evidence: [ref.reference] });
-    };
-    $("article a[href], h1 a[href], h2 a[href], h3 a[href], h4 a[href], h5 a[href]").each((_, anchor) => publish(anchor));
+      const date = card.find("time, [datetime], [class*='date' i], [data-date], [data-published]").first();
+      const dateValue = date.attr("datetime") || date.attr("data-date") || date.attr("data-published") || date.text();
+      publish(page, headline, href, dateValue, card.text().replace(/\s+/g, " ").trim());
+    });
   }
   const value = [...items.values()]
     .sort((a, b) => (b.publishedAt || "").localeCompare(a.publishedAt || ""))
@@ -229,6 +264,53 @@ async function fetchJson(url: string): Promise<unknown | null> {
     if (!response.ok) return null;
     return await response.json();
   } catch { return null; }
+}
+
+const NON_ROLE_LABEL = /^(apply|apply now|learn more|read more|view (?:all )?(?:jobs|openings|positions)|see (?:all )?(?:jobs|openings|positions)(?: in .+)?|careers?|jobs?|open positions?|current openings?|get future-ready\.?)$/i;
+const JOB_TARGET_PATH = /\/(?:careers?|jobs?|positions?|openings?|vacancies?)(?:\/|$)|\/job-offers?\.html(?:$|[?#])/i;
+const CAREER_PORTAL_DETAIL_PATH = /-j\d+\.html(?:$|[?#])/i;
+const ROLE_TITLE_PATTERN = /\b(engineer|developer|architect|designer|manager|director|executive|specialist|analyst|scientist|researcher|recruiter|coordinator|associate|assistant|officer|counsel|consultant|administrator|technician|representative|partner|intern|lead|head|president|vice president|vp)\b/i;
+
+function staticJobs(page: SourcePage): NormalizedJob[] {
+  // Some career portals place their actual job grid outside the marketing page's
+  // semantic main container. Use the full source document for an explicit hiring
+  // page, but remove all global chrome and accept only a provable job-detail URL.
+  const $ = cheerio.load(page.html);
+  $("script,style,noscript,svg,template,nav,footer,aside,[role='navigation'],[role='banner'],[role='contentinfo'],[data-cookie],[data-testid*='cookie'],[id*='cookie'],[class*='cookie'],[id*='consent'],[class*='consent'],[id*='onetrust'],[class*='onetrust']").remove();
+  const jobs: NormalizedJob[] = [];
+  $("a[href]").each((_, element) => {
+    const anchor = $(element);
+    const href = anchor.attr("href");
+    if (!href || /^mailto:|^tel:|^javascript:|^#/i.test(href)) return;
+    let url: string;
+    try { url = new URL(href, page.url).toString(); } catch { return; }
+    const target = new URL(url);
+    const careerPortal = /career portal|open jobs/i.test(`${page.title} ${page.text.slice(0, 240)}`);
+    const validJobPath = JOB_TARGET_PATH.test(target.pathname)
+      || (careerPortal && target.origin === new URL(page.url).origin && CAREER_PORTAL_DETAIL_PATH.test(target.pathname));
+    if (!validJobPath || target.toString() === page.url) return;
+    const heading = anchor.find("h1,h2,h3,h4,h5,h6,[role='heading'],[class*='title' i],[class*='job' i]").first().text().replace(/\s+/g, " ").trim();
+    const rawTitle = (heading || anchor.text()).replace(/\s+/g, " ").trim();
+    if (rawTitle.length < 4 || rawTitle.length > 150 || NON_ROLE_LABEL.test(rawTitle) || !ROLE_TITLE_PATTERN.test(rawTitle)) return;
+    let card = anchor;
+    for (let depth = 0; depth < 5 && card.length; depth += 1) {
+      const attributes = [card.attr("class"), card.attr("id"), card.attr("data-testid")].filter(Boolean).join(" ");
+      const text = card.text().replace(/\s+/g, " ").trim();
+      if (/(job|position|opening|vacanc|career|role)/i.test(attributes) || /\b(location|department|team|type|remote|full[- ]time|part[- ]time)\b/i.test(text)) break;
+      card = card.parent();
+    }
+    const cardText = card.text().replace(/\s+/g, " ").trim();
+    // A role entry needs more than a generic navigation label: accept an explicit
+    // job-route only when its bounded card supplies hiring metadata or meaningful
+    // role context.
+    const explicitCareerPortalRole = careerPortal && CAREER_PORTAL_DETAIL_PATH.test(target.pathname);
+    if ((cardText.length < rawTitle.length + 6 && !explicitCareerPortalRole) || cardText.length > 700) return;
+    const location = cardText.match(/\b(?:location|based in)\s*[:—-]?\s*([^|·•]{2,90})/i)?.[1]?.trim()
+      || cardText.match(/\b(remote|hybrid|on-?site)\b/i)?.[1];
+    const department = cardText.match(/\b(?:department|team|function)\s*[:—-]?\s*([^|·•]{2,90})/i)?.[1]?.trim();
+    jobs.push({ title: rawTitle, department, location, url, excerpt: cardText, source: page });
+  });
+  return jobs;
 }
 
 async function atsJobs(page: SourcePage): Promise<NormalizedJob[]> {
@@ -266,6 +348,7 @@ export async function extractHiring(manifest: SourceManifest): Promise<ModuleRes
   const jobs: NormalizedJob[] = [];
   const seen = new Set<string>();
   for (const page of relevantPages(manifest, "hiring")) {
+    jobs.push(...staticJobs(page));
     for (const item of parseJsonLd(page) as Array<Record<string, unknown>>) {
       if (!String(item?.["@type"] || "").toLowerCase().includes("jobposting")) continue;
       const title = String(item.title || "");
@@ -354,23 +437,64 @@ function integrationContext($: cheerio.CheerioAPI, element: any): boolean {
   return false;
 }
 
+function integrationDocument(page: SourcePage): cheerio.CheerioAPI {
+  // The generic claim boundary deliberately removes every form because forms often
+  // contain lead-capture and consent copy. Richpanel’s first-party directory is a
+  // counterexample: its real integration grid lives inside a Webflow form wrapper.
+  // Use raw document markup only on an explicitly crawled integrations page, strip
+  // all known chrome, then retain a form only when it contains directory-entry URLs.
+  const $ = cheerio.load(page.html);
+  $("script,style,noscript,svg,template,nav,footer,aside,[role='navigation'],[role='banner'],[role='contentinfo'],[data-cookie],[data-testid*='cookie'],[id*='cookie'],[class*='cookie'],[id*='consent'],[class*='consent'],[id*='onetrust'],[class*='onetrust']").remove();
+  const sourcePath = new URL(page.url).pathname.replace(/\/$/, "");
+  $("form").each((_, form) => {
+    const hasDirectoryEntry = $(form).find("a[href]").toArray().some((anchor) => {
+      const href = $(anchor).attr("href");
+      if (!href) return false;
+      try {
+        const target = new URL(href, page.url);
+        return target.pathname.startsWith(`${sourcePath}/`);
+      } catch { return false; }
+    });
+    if (!hasDirectoryEntry) $(form).remove();
+  });
+  return $;
+}
+
+function integrationCardLabel($: cheerio.CheerioAPI, anchor: any): string {
+  const card = $(anchor);
+  const heading = card.find("h1,h2,h3,h4,h5,h6,[class*='title' i],[class*='name' i]").first().text().replace(/\s+/g, " ").trim();
+  const imageAlt = card.find("img[alt]").first().attr("alt")?.replace(/\s+/g, " ").trim() || "";
+  const ariaLabel = card.attr("aria-label")?.replace(/\s+/g, " ").trim() || "";
+  const text = card.text().replace(/\s+/g, " ").trim();
+  return heading || imageAlt || ariaLabel || text;
+}
+
+function isDirectoryEntryUrl(href: string, page: SourcePage): string | null {
+  try {
+    const target = new URL(href, page.url);
+    if (!/^https?:$/i.test(target.protocol)) return null;
+    const source = new URL(page.url);
+    const sourcePath = source.pathname.replace(/\/$/, "");
+    // A directory navigation link points to the hub itself; a card points to an
+    // entry below it. Requiring the child path removes nav/CTA links by structure.
+    if (!sourcePath || !target.pathname.startsWith(`${sourcePath}/`)) return null;
+    return target.toString();
+  } catch { return null; }
+}
+
 export function extractIntegrations(manifest: SourceManifest): ModuleResult<IntegrationSignal[]> {
   const startedAt = Date.now();
   const integrations = new Map<string, IntegrationSignal>();
   const evidenceDrafts: EvidenceDraft[] = [];
   for (const page of relevantPages(manifest, "integrations")) {
-    const $ = cheerio.load(page.contentHtml || page.html);
-    $("a[href],h2 a[href],h3 a[href],h4 a[href]").each((_, element) => {
-      const anchor = $(element).is("a") ? $(element) : $(element).find("a[href]").first();
-      const name = anchor.text().replace(/\s+/g, " ").trim();
+    const $ = integrationDocument(page);
+    $("a[href]").each((_, element) => {
+      const anchor = $(element);
+      const name = integrationCardLabel($, element);
       const href = anchor.attr("href");
       if (!href || name.length < 2 || name.length > 80 || NON_INTEGRATION_LABEL.test(name) || !integrationContext($, element)) return;
-      let url: string;
-      try {
-        // Resolve against the crawled target page, never Orb's dashboard origin.
-        url = new URL(href, page.url).toString();
-        if (!/^https?:$/i.test(new URL(url).protocol)) return;
-      } catch { return; }
+      const url = isDirectoryEntryUrl(href, page);
+      if (!url) return;
       const key = name.toLowerCase();
       if (integrations.has(key)) return;
       const ref = evidence("integrations", "integration", key, "integrations", page, name);

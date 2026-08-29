@@ -52,18 +52,21 @@ function ModuleHeading({ module, status }: { module: IntelligenceModule; status?
         : status?.status === "source_empty"
           ? "Source found; no extractable content"
           : status?.status === "source_found_unparsed"
-            ? "Source found; structure not interpreted"
+            ? "Found a source we couldn't read"
             : "Source unavailable";
+  const sourceUrl = status?.status === "source_found_unparsed" ? status.crawledUrls?.[0] : undefined;
+  const style: React.CSSProperties = { color: tone, fontSize: 10, border: `1px solid ${tone}33`, borderRadius: 99, padding: "3px 8px", whiteSpace: "nowrap" };
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
       <div style={{ fontSize: 12, fontWeight: 700, color: "rgba(255,255,255,0.82)", letterSpacing: "0.01em" }}>{LABELS[module]}</div>
-      <span title={status?.reason || ""} style={{ color: tone, fontSize: 10, border: `1px solid ${tone}33`, borderRadius: 99, padding: "3px 8px", whiteSpace: "nowrap" }}>{text}</span>
+      {sourceUrl ? <a href={sourceUrl} target="_blank" rel="noreferrer" title={`${status?.reason || ""}\n\nOpen source: ${sourceUrl}`} style={{ ...style, textDecoration: "none" }}>{text}</a> : <span title={status?.reason || ""} style={style}>{text}</span>}
     </div>
   );
 }
 
 function SourceLimitation({ status }: { status?: ModuleStatus }) {
-  return <p style={{ margin: 0, color: "rgba(255,255,255,0.48)", fontSize: 12, lineHeight: 1.6 }}>{status?.reason || "The relevant first-party source could not be interpreted in this run."}</p>;
+  const sourceUrl = status?.status === "source_found_unparsed" ? status.crawledUrls?.[0] : undefined;
+  return <p style={{ margin: 0, color: "rgba(255,255,255,0.48)", fontSize: 12, lineHeight: 1.6 }}>{status?.status === "source_found_unparsed" ? <>Found a first-party source we couldn’t read{sourceUrl ? <>. <a href={sourceUrl} target="_blank" rel="noreferrer" style={{ color: "#50e3c2", textDecoration: "none" }}>Open source ↗</a></> : "."}</> : status?.reason || "The relevant first-party source could not be interpreted in this run."}</p>;
 }
 
 function ModuleCard({ module, status, children }: { module: IntelligenceModule; status?: ModuleStatus; children: React.ReactNode }) {

@@ -273,3 +273,73 @@ A completed comparison persists per primary company until the user submits a new
 The Company Intelligence release is built and migrated on an isolated staging branch and database. Production remains unchanged until the owner personally QA-tests three companies and explicitly approves cutover.
 
 During the three staging tests, run one company's AI Perception through a larger model from each provider in an evaluation-only path. Capture cost and qualitative differences in Positioning Delta and Category Anchor. Do not alter the production model mix without a separate owner decision.
+
+---
+
+## 21. Dynamic Directory Sources
+
+### Rule
+
+Orb does **not** automatically render, scroll, click, wait for client-side XHR, or otherwise operate a dynamic directory page to recover factual module data. When a robots-authorized, first-party candidate exposes no static document content, preserve `source_empty` and show: **“This page loads its content dynamically — open it directly.”** The message links to the exact fetched first-party source URL.
+
+### Why
+
+The staging-only one-render Integrations pilot recovered zero entries from both HubSpot Marketplace and Dropbox Apps while adding 12.6–18.7 seconds of latency (and a HubSpot navigation timeout). A user-triggered version is also out of scope: operating a site after load changes Orb’s deliberate posture from reading publicly served documents to interacting with a remote application.
+
+---
+
+## 22. Source Content and Path Boundaries
+
+### Rule
+
+Source cleaning removes interactive form controls (`input`, `select`, `textarea`, and `button`) but never removes a generic enclosing `form`. Form-wrapped published content must remain available to every factual module. Navigation, headers, footers, consent UI, and related chrome remain excluded.
+
+Allowlisted source-path matching supports delimiter-bounded hyphenated public variants for all factual modules, including `/about-us`, `/company-news`, `/press-releases`, `/app-integrations`, `/trust-center`, `/meet-the-team`, `/open-roles`, and `/product-pricing`. The matching must not overmatch `/newsletter` as news or `/company/management` as news.
+
+### Why
+
+The former generic `form` selector silently removed 41,874 characters from Dropbox’s rendered body. A matched eight-domain current-versus-legacy no-model control found 35 form-wrapped pages; the control changed no current module status, item count, or evidence count in that sample, but the boundary defect is real and cross-module. The path fix recovered Anagram’s published People data from `anagramhq.com/about-us/` and HubSpot’s published News data from `www.hubspot.com/company-news` without treating all `/company/...` pages as news.
+
+### Verification
+
+`/newsletter` does not match News; `/company/management` matches People but not News. Full application TypeScript compilation and production build passed locally. No production or staging deployment occurred.
+
+---
+
+---
+
+## 23. Fair Allocation and Shallow Source Selection
+
+### Rule
+
+The fixed first-party source allocation is **18 pages**: six factual modules with a maximum of three pages each. Candidate ordering within each module is deterministic and two-tiered: **(1)** homepage-discovered links, then one-hop hub links, then explicit root/nested probes; **(2)** ascending URL path depth within each tier, followed by original discovery order as the tie-breaker. This keeps a company-published path such as `/company/about-us` ahead of a speculative `/about` probe, while favoring a directory/index page such as `/trust` over `/trust/cookie-policy` when both originate in the same tier.
+
+### Why
+
+The prior 16-page allocation could never fulfill six three-page module caps. Across the eight-domain measurement, Hiring and Compliance were each capped at two pages in all eight runs. The 18-page correction restores the existing configured per-module allocation; it is not a discovery-budget expansion beyond those caps.
+
+---
+
+## 24. SPA Catch-All Availability Guard
+
+### Rule
+
+When every successful first-party route response is a soft-404 match to the homepage hash and all remaining selected route requests abort, retain only the homepage and classify source modules from that honest homepage-only manifest. Do not emit `unavailable` merely because a static SPA shell served identically for its candidate paths.
+
+### Why
+
+TylerMatheny.com returned an identical 12-character static shell for every successfully fetched candidate route, while remaining parallel requests hit the 10-second request timeout. This is a catch-all SPA posture, not evidence that six independent factual module sources are unavailable. The guard is intentionally strict and does not relabel runs containing a materially distinct source response.
+
+---
+
+## 25. Paessler Integrations False Positive
+
+### Rule
+
+Do not restore Paessler’s historical `Apple Watch` Integration result. It linked to a knowledge-base article rather than a first-party partner-directory entry. Retain `source_found_unparsed` until a qualifying static directory item can be extracted.
+
+### Baseline Treatment
+
+The historical eight-domain raw published count of 14 includes this false positive. The valid comparison baseline is therefore **13 published**.
+
+---

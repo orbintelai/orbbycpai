@@ -50,11 +50,13 @@ function ModuleHeading({ module, status }: { module: IntelligenceModule; status?
       : status?.status === "source_not_found"
         ? "No source found"
         : status?.status === "source_empty"
-          ? "Source found; no extractable content"
+          ? "Content loads dynamically"
           : status?.status === "source_found_unparsed"
             ? "Found a source we couldn't read"
             : "Source unavailable";
-  const sourceUrl = status?.status === "source_found_unparsed" ? status.crawledUrls?.[0] : undefined;
+  const sourceUrl = status?.status === "source_empty" || status?.status === "source_found_unparsed"
+    ? status.sourceUrl || status.crawledUrls?.[0]
+    : undefined;
   const style: React.CSSProperties = { color: tone, fontSize: 10, border: `1px solid ${tone}33`, borderRadius: 99, padding: "3px 8px", whiteSpace: "nowrap" };
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
@@ -65,8 +67,15 @@ function ModuleHeading({ module, status }: { module: IntelligenceModule; status?
 }
 
 function SourceLimitation({ status }: { status?: ModuleStatus }) {
-  const sourceUrl = status?.status === "source_found_unparsed" ? status.crawledUrls?.[0] : undefined;
-  return <p style={{ margin: 0, color: "rgba(255,255,255,0.48)", fontSize: 12, lineHeight: 1.6 }}>{status?.status === "source_found_unparsed" ? <>Found a first-party source we couldn’t read{sourceUrl ? <>. <a href={sourceUrl} target="_blank" rel="noreferrer" style={{ color: "#50e3c2", textDecoration: "none" }}>Open source ↗</a></> : "."}</> : status?.reason || "The relevant first-party source could not be interpreted in this run."}</p>;
+  const sourceUrl = status?.status === "source_empty" || status?.status === "source_found_unparsed"
+    ? status.sourceUrl || status.crawledUrls?.[0]
+    : undefined;
+  const copy = status?.status === "source_empty"
+    ? "This page loads its content dynamically"
+    : status?.status === "source_found_unparsed"
+      ? "Found a first-party source we couldn’t read"
+      : status?.reason || "The relevant first-party source could not be interpreted in this run.";
+  return <p style={{ margin: 0, color: "rgba(255,255,255,0.48)", fontSize: 12, lineHeight: 1.6 }}>{copy}{sourceUrl ? <> — <a href={sourceUrl} target="_blank" rel="noreferrer" style={{ color: "#50e3c2", textDecoration: "none" }}>{status?.status === "source_empty" ? "open it directly ↗" : "Open source ↗"}</a></> : "."}</p>;
 }
 
 function ModuleCard({ module, status, children }: { module: IntelligenceModule; status?: ModuleStatus; children: React.ReactNode }) {

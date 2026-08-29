@@ -78,7 +78,8 @@ function statusFor(module: IntelligenceModule, manifest: SourceManifest, started
   const contentPages = attempted.filter((page) => !page.blocked && !page.softNotFound && Boolean(page.text));
   const blocked = attempted.length > 0 && attempted.every((page) => Boolean(page.blocked));
   const onlySoftNotFound = attempted.length > 0 && attempted.every((page) => Boolean(page.softNotFound) || page.httpStatus === 404);
-  const emptySource = attempted.some((page) => !page.blocked && !page.softNotFound && page.httpStatus && page.httpStatus >= 200 && page.httpStatus < 300 && !page.text);
+  const emptyPage = attempted.find((page) => !page.blocked && !page.softNotFound && page.httpStatus && page.httpStatus >= 200 && page.httpStatus < 300 && !page.text);
+  const emptySource = Boolean(emptyPage);
   const unavailable = attempted.some((page) => Boolean(page.fetchError) || Boolean(page.httpStatus && page.httpStatus >= 500));
   const status = found
     ? "published"
@@ -104,7 +105,8 @@ function statusFor(module: IntelligenceModule, manifest: SourceManifest, started
           : emptySource
             ? "A candidate first-party source was found but exposed no extractable document content; this is a limitation of the run."
             : "A candidate first-party source was found but its published structure could not be interpreted; this is a limitation of the run.";
-  return { status, reason: statusReason, crawledUrls, durationMs: Date.now() - startedAt };
+  const sourceUrl = emptyPage?.url || contentPages[0]?.url;
+  return { status, reason: statusReason, crawledUrls, sourceUrl, durationMs: Date.now() - startedAt };
 }
 
 function parseJsonLd(page: SourcePage): unknown[] {
@@ -438,11 +440,10 @@ function integrationContext($: cheerio.CheerioAPI, element: any): boolean {
 }
 
 function integrationDocument(page: SourcePage): cheerio.CheerioAPI {
-  // The generic claim boundary deliberately removes every form because forms often
-  // contain lead-capture and consent copy. Richpanel’s first-party directory is a
-  // counterexample: its real integration grid lives inside a Webflow form wrapper.
-  // Use raw document markup only on an explicitly crawled integrations page, strip
-  // all known chrome, then retain a form only when it contains directory-entry URLs.
+  // The generic claim boundary strips form controls, not their enclosing content,
+  // because first-party directory cards may be form-wrapped. On an explicitly
+  // crawled integrations page, use raw markup, remove known chrome, then retain a
+  // form only when it contains directory-entry URLs.
   const $ = cheerio.load(page.html);
   $("script,style,noscript,svg,template,nav,footer,aside,[role='navigation'],[role='banner'],[role='contentinfo'],[data-cookie],[data-testid*='cookie'],[id*='cookie'],[class*='cookie'],[id*='consent'],[class*='consent'],[id*='onetrust'],[class*='onetrust']").remove();
   const sourcePath = new URL(page.url).pathname.replace(/\/$/, "");

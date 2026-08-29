@@ -18,6 +18,8 @@ export interface ModuleStatus {
   status: ModuleStatusKind;
   reason: string;
   crawledUrls: string[];
+  /** The first-party page that directly produced this status, when one was fetched. */
+  sourceUrl?: string;
   durationMs: number;
 }
 

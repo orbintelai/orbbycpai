@@ -6,7 +6,7 @@ import { isSameRegistrableDomain } from "./lineage";
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_PAGE_BYTES = 1_500_000;
-const MAX_FIRST_PARTY_PAGES = 16;
+const MAX_FIRST_PARTY_PAGES = 18;
 const MAX_FIRST_PARTY_PAGES_PER_MODULE = 3;
 const MAX_ATS_PAGES = 2;
 const CONCURRENCY = 4;
@@ -26,14 +26,22 @@ const NESTED_PROBE_PATHS: Record<IntelligenceModule, string[]> = {
 };
 
 const PATH_PATTERNS: Record<IntelligenceModule, RegExp[]> = {
-  people: [/\/(about|team|leadership|our-team|company|people)(\/|$)/i],
+  // Hyphenated public paths are common (`/about-us`, `/meet-the-team`). The
+  // suffix is delimiter-bound so `/newsletter` does not qualify as `/news`.
+  people: [
+    /\/(about|team|leadership|our-team|people|meet)(?:-[a-z0-9]+)*(\/|$)/i,
+    /\/(company)(\/|$)/i,
+  ],
   // Editorial blogs/resources often contain educational content rather than company
   // signals. News is intentionally limited to explicit corporate-news surfaces.
-  news: [/\/(news|press|newsroom|updates|changelog)(\/|$)/i],
-  hiring: [/\/(careers|jobs|join|work-with-us)(\/|$)/i],
-  compliance: [/\/(security|trust|privacy|compliance|legal)(\/|$)/i],
-  integrations: [/\/(integrations|marketplace|apps)(\/|$)/i],
-  productPricing: [/\/(product|platform|solutions|pricing)(\/|$)/i],
+  news: [
+    /\/(news|press|newsroom|updates|changelog)(?:-[a-z0-9]+)*(\/|$)/i,
+    /\/(company-news)(?:-[a-z0-9]+)*(\/|$)/i,
+  ],
+  hiring: [/\/(careers|jobs|join|work-with-us|open)(?:-[a-z0-9]+)*(\/|$)/i],
+  compliance: [/\/(security|trust|privacy|compliance|legal)(?:-[a-z0-9]+)*(\/|$)/i],
+  integrations: [/\/(integrations|marketplace|apps|app)(?:-[a-z0-9]+)*(\/|$)/i],
+  productPricing: [/\/(product|platform|solutions|pricing)(?:-[a-z0-9]+)*(\/|$)/i],
 };
 
 const ATS_HOSTS = /(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com)$/i;
@@ -55,7 +63,7 @@ const BLOCK_BODY_PATTERNS = [/hcaptcha/i, /recaptcha/i, /cf-ray/i, /cf-mitigated
 // Company Intelligence publishes first-party claims, not a site's navigation or
 // consent UI. Keep the unmodified HTML for link discovery and JSON-LD, while
 // every claim-facing extractor receives this main-content-only representation.
-const CHROME_SELECTOR = "script,style,noscript,svg,template,nav,footer,aside,form,[role='navigation'],[role='banner'],[role='contentinfo'],[data-cookie],[data-testid*='cookie'],[id*='cookie'],[class*='cookie'],[id*='consent'],[class*='consent'],[id*='onetrust'],[class*='onetrust']";
+const CHROME_SELECTOR = "script,style,noscript,svg,template,nav,footer,aside,input,select,textarea,button,[role='navigation'],[role='banner'],[role='contentinfo'],[data-cookie],[data-testid*='cookie'],[id*='cookie'],[class*='cookie'],[id*='consent'],[class*='consent'],[id*='onetrust'],[class*='onetrust']";
 
 function contentOnly($: cheerio.CheerioAPI) {
   // Prefer semantic page content over the entire body. Modern sites often put
@@ -277,7 +285,7 @@ async function fetchSourcePage(url: string, sourceKind: SourcePage["sourceKind"]
   }
 }
 
-function moduleMatches(url: string): IntelligenceModule[] {
+export function moduleMatches(url: string): IntelligenceModule[] {
   return (Object.entries(PATH_PATTERNS) as Array<[IntelligenceModule, RegExp[]]>)
     .filter(([, patterns]) => patterns.some((pattern) => pattern.test(new URL(url).pathname)))
     .map(([module]) => module);
@@ -309,6 +317,40 @@ async function boundedMap<T, R>(values: T[], mapper: (value: T) => Promise<R>): 
   });
   await Promise.all(workers);
   return results;
+}
+
+function pathDepth(url: string): number {
+  return new URL(url).pathname.split("/").filter(Boolean).length;
+}
+
+function shallowPathFirst(candidates: string[]): string[] {
+  return candidates
+    .map((url, index) => ({ url, index, depth: pathDepth(url) }))
+    .sort((left, right) => left.depth - right.depth || left.index - right.index)
+    .map(({ url }) => url);
+}
+
+function provenanceThenDepth(
+  candidates: string[],
+  homepageDiscovered: Set<string>,
+  oneHopHubDiscovered: Set<string>,
+): string[] {
+  const remaining = new Set(candidates);
+  const takeTier = (tier: Set<string>) => shallowPathFirst(
+    candidates.filter((url) => remaining.has(url) && tier.has(url)),
+  ).filter((url) => {
+    remaining.delete(url);
+    return true;
+  });
+
+  // A public link the company exposes from its homepage is stronger evidence than
+  // an allowlisted guess. One-hop hub links occupy the same middle tier when the
+  // discovery plan supplies them; explicit root/nested probes are the fallback.
+  return [
+    ...takeTier(homepageDiscovered),
+    ...takeTier(oneHopHubDiscovered),
+    ...shallowPathFirst(candidates.filter((url) => remaining.has(url))),
+  ];
 }
 
 function selectFairCandidates(moduleCandidates: Record<IntelligenceModule, string[]>): string[] {
@@ -351,6 +393,15 @@ export async function buildSourceManifest(homepageUrl: string): Promise<SourceMa
     productPricing: [],
   };
   const blockedUrls: Record<string, string> = {};
+  const homepageDiscoveredCandidates: Record<IntelligenceModule, Set<string>> = {
+    people: new Set(), news: new Set(), hiring: new Set(), compliance: new Set(), integrations: new Set(), productPricing: new Set(),
+  };
+  // The current fixed-budget crawler does not yet enqueue one-hop hub pages. Keep
+  // this tier explicit so any such candidates enter deterministically between
+  // homepage links and path probes without changing the discovery budget here.
+  const oneHopHubCandidates: Record<IntelligenceModule, Set<string>> = {
+    people: new Set(), news: new Set(), hiring: new Set(), compliance: new Set(), integrations: new Set(), productPricing: new Set(),
+  };
   const pages: SourcePage[] = [];
 
   if (homepage) {
@@ -370,7 +421,10 @@ export async function buildSourceManifest(homepageUrl: string): Promise<SourceMa
     const matches = moduleMatches(link.url);
     if (matches.length > 0) {
       firstPartyCandidates.add(link.url);
-      for (const module of matches) moduleCandidates[module].push(link.url);
+      for (const module of matches) {
+        moduleCandidates[module].push(link.url);
+        homepageDiscoveredCandidates[module].add(link.url);
+      }
     }
   }
 
@@ -394,7 +448,11 @@ export async function buildSourceManifest(homepageUrl: string): Promise<SourceMa
   }
 
   for (const module of Object.keys(moduleCandidates) as IntelligenceModule[]) {
-    moduleCandidates[module] = [...new Set(moduleCandidates[module])];
+    moduleCandidates[module] = provenanceThenDepth(
+      [...new Set(moduleCandidates[module])],
+      homepageDiscoveredCandidates[module],
+      oneHopHubCandidates[module],
+    );
   }
   const candidateCounts = Object.fromEntries(
     (Object.keys(moduleCandidates) as IntelligenceModule[]).map((module) => [module, moduleCandidates[module].length]),
@@ -419,15 +477,29 @@ export async function buildSourceManifest(homepageUrl: string): Promise<SourceMa
     .filter((url) => firstPartyHost(new URL(url).hostname, rootHostname));
 
   const fetchedPages = await boundedMap(orderedCandidates, async (url) => fetchSourcePage(url, "first_party", canonicalHomepage, homepageContentHash));
-  for (const page of fetchedPages) {
-    if (!page) continue;
-    pages.push(page);
-    if (page.blocked) {
-      const reason = page.blockReason || "Source restricts automated access";
-      blockedUrls[page.requestedUrl || page.url] = reason;
-      blockedUrls[page.url] = reason;
+  const successfulFirstPartyPages = fetchedPages.filter((page): page is SourcePage => Boolean(page?.httpStatus && !page.fetchError));
+  const abortedFirstPartyPages = fetchedPages.filter((page) => page?.fetchError === "This operation was aborted");
+  const spaCatchAllWithAborts = successfulFirstPartyPages.length > 0
+    && successfulFirstPartyPages.every((page) => page.softNotFound)
+    && abortedFirstPartyPages.length > 0
+    && successfulFirstPartyPages.length + abortedFirstPartyPages.length === fetchedPages.length;
+
+  if (spaCatchAllWithAborts) {
+    // A catch-all SPA returned the same static shell for every completed route while
+    // remaining route probes timed out. Retain only the homepage so this becomes
+    // honest source absence rather than an availability failure for every module.
+    for (const module of Object.keys(moduleCandidates) as IntelligenceModule[]) moduleCandidates[module] = [];
+  } else {
+    for (const page of fetchedPages) {
+      if (!page) continue;
+      pages.push(page);
+      if (page.blocked) {
+        const reason = page.blockReason || "Source restricts automated access";
+        blockedUrls[page.requestedUrl || page.url] = reason;
+        blockedUrls[page.url] = reason;
+      }
+      for (const module of moduleMatches(page.requestedUrl || page.url)) moduleCandidates[module].push(page.requestedUrl || page.url);
     }
-    for (const module of moduleMatches(page.requestedUrl || page.url)) moduleCandidates[module].push(page.requestedUrl || page.url);
   }
 
   const atsPages = await boundedMap(atsCandidates.slice(0, MAX_ATS_PAGES), async ({ url, linkedFrom }) => fetchSourcePage(url, "ats", linkedFrom, homepageContentHash));

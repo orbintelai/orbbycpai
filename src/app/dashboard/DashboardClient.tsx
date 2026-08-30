@@ -721,11 +721,11 @@ function ComparisonTab({ primaryProfile }: { primaryProfile: BrandProfile }) {
                 if (!pos) return null;
                 const competitorName = competitor.productIntelligence?.productName || competitor.meta?.brandName || domain;
                 const fields: { label: string; key: keyof typeof pos; accent?: boolean }[] = [
-                  { label: "Category Position", key: "categoryPosition" },
-                  { label: "Positioning Overlap", key: "positioningOverlap" },
-                  { label: "Positioning Gap", key: "positioningGap" },
-                  { label: "Narrative Tension", key: "narrativeTension" },
-                  { label: "Recommended Move", key: "recommendedMove", accent: true },
+                  { label: "Where each of you sits", key: "categoryPosition" },
+                  { label: "What you both claim", key: "positioningOverlap" },
+                  { label: "What only you can say", key: "positioningGap" },
+                  { label: "Where they’re exposed", key: "narrativeTension" },
+                  { label: "What to lead with", key: "recommendedMove", accent: true },
                 ];
                 return (
                   <Card key={i}>

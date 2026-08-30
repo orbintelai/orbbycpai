@@ -293,6 +293,77 @@ interface CompetitivePosition {
   recommendedMove: string;
 }
 
+type StrategistModelAnalysis = {
+  model: string;
+  categoryAnchor?: string;
+  positioningDelta?: string;
+};
+
+type StrategistCompanyInput = {
+  name: string;
+  firstParty: {
+    productClaims: string[];
+    pricingStatement?: string;
+    integrations: string[];
+    complianceClaims: string[];
+  };
+  aiPerception: StrategistModelAnalysis[];
+};
+
+type StrategistComparisonInput = {
+  primary: StrategistCompanyInput;
+  competitor: StrategistCompanyInput;
+};
+
+function strategistCompanyInput(profile: BrandProfile, fallbackName: string): StrategistCompanyInput {
+  const intelligence = profile.companyIntelligence;
+  const perception = profile.aiPerception;
+  const perceptionEntries: Array<[string, typeof perception extends undefined ? never : NonNullable<typeof perception>["openai"] | undefined]> = [
+    ["OpenAI", perception?.openai],
+    ["Anthropic", perception?.anthropic],
+    ["Google", perception?.google],
+  ];
+  return {
+    name: profile.meta?.brandName || fallbackName,
+    firstParty: {
+      productClaims: intelligence?.productPricing?.productClaims?.slice(0, 6) || [],
+      pricingStatement: intelligence?.productPricing?.pricingStatement,
+      integrations: intelligence?.integrations?.slice(0, 12).map((item) => item.name) || [],
+      complianceClaims: intelligence?.compliance?.slice(0, 6).map((item) => item.claim) || [],
+    },
+    aiPerception: perceptionEntries.flatMap(([model, entry]) => entry && (entry.categoryAnchor || entry.positioningDelta)
+      ? [{ model, categoryAnchor: entry.categoryAnchor, positioningDelta: entry.positioningDelta }]
+      : []),
+  };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function hasDirectionalEvidence(primaryName: string, competitor: StrategistCompanyInput): boolean {
+  const primaryPattern = new RegExp(`\\b${escapeRegExp(primaryName)}\\b`, "i");
+  // Narrative pressure on a competitor requires evidence from the competitor's own
+  // model analysis. Shared categories or the primary company's claims prove overlap,
+  // not that the competitor experiences pressure from this specific company.
+  return competitor.aiPerception.some((entry) => primaryPattern.test(`${entry.categoryAnchor || ""} ${entry.positioningDelta || ""}`));
+}
+
+export function enforceDirectionalNarrativeTension(primaryName: string, competitor: StrategistCompanyInput, narrativeTension: string): string {
+  if (hasDirectionalEvidence(primaryName, competitor)) return narrativeTension;
+  return `No directional competitive pressure is supported by this record: none of ${competitor.name}'s available OpenAI, Anthropic, or Google analyses names ${primaryName}.`;
+}
+
+function unavailableCompetitivePosition(): CompetitivePosition {
+  return {
+    categoryPosition: "Analysis unavailable.",
+    positioningOverlap: "Analysis unavailable.",
+    positioningGap: "Analysis unavailable.",
+    narrativeTension: "Analysis unavailable.",
+    recommendedMove: "Analysis unavailable.",
+  };
+}
+
 async function generateCompetitivePosition(
   primaryProfile: BrandProfile,
   competitorProfile: BrandProfile
@@ -301,78 +372,60 @@ async function generateCompetitivePosition(
     apiKey: process.env.OPENAI_API_KEY || process.env.OPENAI_KEY,
     baseURL: "https://api.openai.com/v1",
   });
+  const comparisonInput: StrategistComparisonInput = {
+    primary: strategistCompanyInput(primaryProfile, "Primary company"),
+    competitor: strategistCompanyInput(competitorProfile, "Competitor"),
+  };
+  const { primary, competitor } = comparisonInput;
+  const hasReciprocalDirectionality = hasDirectionalEvidence(primary.name, competitor);
 
-  const primaryName = primaryProfile.meta?.brandName || "Primary Brand";
-  const competitorName = competitorProfile.meta?.brandName || "Competitor";
+  const prompt = `You are Orb’s evidence-bound Brand Strategist. Analyze the primary company against exactly one accessible competitor.
 
-  // Pull positioningDelta and categoryAnchor from all three models for each company
-  const primaryPerception = primaryProfile.aiPerception;
-  const competitorPerception = competitorProfile.aiPerception;
+Your only permitted inputs are the structured comparison object below. First-party fields are factual claims published by the company. AI Perception fields are model analysis and identify the individual model. Do not browse. Do not use background knowledge. Do not introduce customers, category facts, pricing, product features, market share, analyst opinions, or competitive claims absent from the input.
 
-  const primaryPerceptionBlock = primaryPerception ? `
-${primaryName} — AI Perception (across 3 models):
-- ChatGPT positioning delta: ${primaryPerception.openai?.positioningDelta || "unavailable"}
-- ChatGPT category anchor: ${primaryPerception.openai?.categoryAnchor || "unavailable"}
-- Claude positioning delta: ${primaryPerception.anthropic?.positioningDelta || "unavailable"}
-- Claude category anchor: ${primaryPerception.anthropic?.categoryAnchor || "unavailable"}
-- Gemini positioning delta: ${primaryPerception.google?.positioningDelta || "unavailable"}
-- Gemini category anchor: ${primaryPerception.google?.categoryAnchor || "unavailable"}` : "";
+Return ONLY JSON with exactly these string fields: categoryPosition, positioningOverlap, positioningGap, narrativeTension, recommendedMove.
 
-  const competitorPerceptionBlock = competitorPerception ? `
-${competitorName} — AI Perception (across 3 models):
-- ChatGPT positioning delta: ${competitorPerception.openai?.positioningDelta || "unavailable"}
-- ChatGPT category anchor: ${competitorPerception.openai?.categoryAnchor || "unavailable"}
-- Claude positioning delta: ${competitorPerception.anthropic?.positioningDelta || "unavailable"}
-- Claude category anchor: ${competitorPerception.anthropic?.categoryAnchor || "unavailable"}
-- Gemini positioning delta: ${competitorPerception.google?.positioningDelta || "unavailable"}
-- Gemini category anchor: ${competitorPerception.google?.categoryAnchor || "unavailable"}` : "";
+Rules:
+1. Write no more than three concise sentences per field.
+2. Name the input behind each conclusion inline.
+3. Say “first-party claim” for factual inputs and identify OpenAI, Anthropic, or Google for model analysis.
+4. If the record does not support a conclusion, say so plainly rather than filling the gap.
+5. Do not assume the primary company wins; state a competitor strength when the inputs support it.
+6. recommendedMove must recommend one specific sales or positioning move rooted in a primary-company input and name that input.
+7. Use a neutral analytical tone; avoid superlatives and unsupported certainty.
+8. When the evidence supports a clear conclusion, state it plainly; false balance is not neutrality.
+9. When models disagree on category placement, report the divergence and name which model said what; do not average it into a false consensus.
+10. When both companies have pricing or business-model evidence, state the supported economic implication of that difference.
+11. recommendedMove must say what a representative should say or ask on a call, not merely what to emphasize. It must be executable without translation.
+12. Directionality is strict: state that the primary company creates pressure on, exposes, or threatens the competitor only if the competitor’s own AI Perception categoryAnchor or positioningDelta explicitly names the primary company. Shared category, product overlap, or the primary company’s self-description are not directional evidence. If no directional evidence exists, narrativeTension must say that no directional competitive pressure is supported by this record.
 
-  const prompt = `You are a neutral brand strategist. Analyze the competitive positioning between ${primaryName} and ${competitorName} based on the data below. Do not describe what either company does — analyze the strategic relationship between their positions. Where the three AI models agree on positioning, treat it as signal. Where they diverge, name the divergence.
-
-${primaryName} — Structural data:
-- Positioning signal: ${primaryProfile.positioningSignal || primaryProfile.productIntelligence?.oneLiner || ""}
-- Category: ${(primaryProfile.productIntelligence?.productCategory || []).join(", ")}
-- Archetype: ${primaryProfile.brandArchetype?.archetype || ""}
-- Target customers: ${primaryProfile.productIntelligence?.targetCustomers || ""}
-${primaryPerceptionBlock}
-
-${competitorName} — Structural data:
-- Positioning signal: ${competitorProfile.positioningSignal || competitorProfile.productIntelligence?.oneLiner || ""}
-- Category: ${(competitorProfile.productIntelligence?.productCategory || []).join(", ")}
-- Archetype: ${competitorProfile.brandArchetype?.archetype || ""}
-- Target customers: ${competitorProfile.productIntelligence?.targetCustomers || ""}
-${competitorPerceptionBlock}
-
-Return ONLY this JSON object — no markdown, no explanation, no code fences:
-
-{
-  "categoryPosition": "1-2 sentences. Where does each company sit in the category mental map? Category-defining, challenger, alternative, adjacent, or specialist? Be specific about both. Use the AI model consensus where available.",
-  "positioningOverlap": "1-2 sentences. Where do the two companies compete on the same claims? Name the specific territory both are fighting for. If the AI models show divergence on where each company sits, note it.",
-  "positioningGap": "2-3 sentences. Where does each company claim territory the other doesn't? Name the specific gaps — these are either defensive moats or attack vectors.",
-  "narrativeTension": "1-2 sentences. Where does one company's positioning create pressure on the other's? What is the strategic implication of that tension?",
-  "recommendedMove": "1-2 sentences. One specific, actionable recommendation for ${primaryName} based on this analysis. Not generic advice — name the specific gap or tension to exploit."
-}`;
+Comparison input:
+${JSON.stringify(comparisonInput)}`;
 
   try {
     const response = await client.chat.completions.create({
       model: "gpt-4o-mini",
-      max_tokens: 800,
-      temperature: 0.4,
+      max_tokens: 1000,
+      temperature: 0.2,
       messages: [{ role: "user", content: prompt }],
     });
     const text = response.choices[0]?.message?.content?.trim() ?? "";
     const match = text.match(/\{[\s\S]*\}/);
-    const jsonStr = match ? match[0] : text;
-    return JSON.parse(jsonStr) as CompetitivePosition;
+    const parsed = JSON.parse(match ? match[0] : text) as Partial<CompetitivePosition>;
+    const result: CompetitivePosition = {
+      categoryPosition: parsed.categoryPosition || "Analysis unavailable.",
+      positioningOverlap: parsed.positioningOverlap || "Analysis unavailable.",
+      positioningGap: parsed.positioningGap || "Analysis unavailable.",
+      narrativeTension: parsed.narrativeTension || "Analysis unavailable.",
+      recommendedMove: parsed.recommendedMove || "Analysis unavailable.",
+    };
+    result.narrativeTension = hasReciprocalDirectionality
+      ? result.narrativeTension
+      : enforceDirectionalNarrativeTension(primary.name, competitor, result.narrativeTension);
+    return result;
   } catch (err) {
     console.error("[compare] competitivePosition generation failed:", (err as Error).message);
-    return {
-      categoryPosition: "Analysis unavailable.",
-      positioningOverlap: "Analysis unavailable.",
-      positioningGap: "Analysis unavailable.",
-      narrativeTension: "Analysis unavailable.",
-      recommendedMove: "Analysis unavailable.",
-    };
+    return unavailableCompetitivePosition();
   }
 }
 

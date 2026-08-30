@@ -373,3 +373,19 @@ Directional competitive-pressure claims are stricter than overlap claims. The st
 A prior comparison asserted that Richpanel creates pressure on Zendesk, Gorgias, and Gladly even though their own model category anchors did not name Richpanel. That is an unsupported directional claim. Evidence-supported overlap may remain useful, but it cannot be upgraded to reciprocal competitive pressure without reciprocal evidence.
 
 ---
+
+## 28. Streamed Comparison, Canonical Reuse, and Deferred Strategist
+
+### Rule
+
+Competitor reuse is resolved before any capacity reservation using completed snapshots younger than seven days and the submitted URL’s PSL registrable-domain identity, with exact submitted URL compatibility for pending cross-domain redirects. Unconfirmed aliases never merge cache identities. A cache hit performs no extraction, model call, capacity reservation, or capacity completion.
+
+Comparisons stream factual progress and return the factual table once profile resolution completes. Fresh competitor resolution is limited to two concurrent workers. Strategist analysis is a separate authenticated request and cannot block factual delivery.
+
+Each comparison records its primary and competitor generation IDs. Strategist output is persisted per `(comparison_id, competitor_generation_id)` and the endpoint accepts only a user-owned comparison plus a competitor ID recorded in that comparison. Arbitrary generation IDs are rejected.
+
+### Why
+
+Exact `brand_url` equality missed completed `www` snapshots for Zendesk, Gorgias, and Gladly, causing unnecessary full reruns. A single blocking route also held the client spinner after factual snapshots had completed. Comparison membership prevents globally reusable competitor records from becoming a UUID-addressable evidence endpoint.
+
+---

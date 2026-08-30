@@ -74,12 +74,30 @@ interface CompetitivePosition {
   recommendedMove: string;
 }
 
+type StrategistStatus = "idle" | "loading" | "complete" | "failed";
+
 interface ComparisonResult {
+  comparisonId?: string;
+  primaryGenerationId?: string;
+  competitorGenerationIds?: string[];
   primary: BrandProfile;
   competitors: BrandProfile[];
   competitivePositions: Record<string, CompetitivePosition>;
+  strategistStatuses?: Record<string, StrategistStatus>;
   blockedUrls: Record<string, string>; // { [domain]: inputUrl }
 }
+
+type ComparisonStreamEvent = {
+  type: "primary_started" | "profile_cached" | "profile_started" | "profile_completed" | "profile_restricted" | "factual_complete" | "error";
+  comparisonId?: string;
+  primaryGenerationId?: string;
+  primary?: BrandProfile;
+  competitors?: BrandProfile[];
+  competitorGenerationIds?: string[];
+  blockedUrls?: Record<string, string>;
+  error?: string;
+  code?: string;
+};
 
 interface User { name: string; email: string; initials: string }
 interface CapacitySummary { sharedUsed: number; sharedLimit: number; adminReserveUsed: number; adminReserveLimit: number; totalUsed: number; totalLimit: number; estimatedReservedCostUsd: number; dashboardAlert?: "50" | "80" }
@@ -542,38 +560,55 @@ function ComparisonTab({ primaryProfile }: { primaryProfile: BrandProfile }) {
   });
   const [error, setError] = useState("");
 
+  const persistComparison = (next: ComparisonResult, urls: string[]) => {
+    try { localStorage.setItem(storageKey, JSON.stringify({ competitorUrls: urls, result: next })); } catch {}
+  };
+
+  const loadStrategist = async (comparison: ComparisonResult, competitorGenerationId: string, domain: string, urls: string[]) => {
+    if (!comparison.comparisonId) return;
+    setResult((current) => current ? { ...current, strategistStatuses: { ...current.strategistStatuses, [domain]: "loading" } } : current);
+    try {
+      const res = await fetch("/api/compare/strategist", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ comparisonId: comparison.comparisonId, competitorGenerationId }) });
+      const data = await res.json();
+      if (res.status === 202) { window.setTimeout(() => void loadStrategist(comparison, competitorGenerationId, domain, urls), 1500); return; }
+      if (!res.ok) throw new Error(data.error || "Strategist analysis unavailable.");
+      setResult((current) => {
+        if (!current) return current;
+        const next = { ...current, competitivePositions: { ...current.competitivePositions, [domain]: data.result }, strategistStatuses: { ...current.strategistStatuses, [domain]: "complete" as StrategistStatus } };
+        persistComparison(next, urls);
+        return next;
+      });
+    } catch {
+      setResult((current) => current ? { ...current, strategistStatuses: { ...current.strategistStatuses, [domain]: "failed" } } : current);
+    }
+  };
+
   const handleRunComparison = async () => {
     const validUrls = competitorUrls.filter(u => u.trim());
     if (validUrls.length === 0) return;
-    setIsLoading(true);
-    setError("");
-    setResult(null);
-
+    setIsLoading(true); setError(""); setResult(null);
     try {
-      const res = await fetch("/api/compare", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          primaryUrl: primaryUrl,
-          competitorUrls: validUrls,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Comparison failed");
-      const comparison = data.comparison as ComparisonResult;
-      setResult(comparison);
-      // Persist result + competitor URLs so they survive tab navigation
-      try {
-        localStorage.setItem(storageKey, JSON.stringify({
-          competitorUrls: validUrls,
-          result: comparison,
-        }));
-      } catch {}
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setIsLoading(false);
-    }
+      const res = await fetch("/api/compare", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ primaryUrl, competitorUrls: validUrls }) });
+      if (!res.ok || !res.body) { const data = await res.json(); throw new Error(data.error || "Comparison failed"); }
+      const reader = res.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read(); if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const messages = buffer.split("\\n\\n"); buffer = messages.pop() || "";
+        for (const message of messages) {
+          const dataLine = message.split("\\n").find((line) => line.startsWith("data: "));
+          if (!dataLine) continue;
+          const event = JSON.parse(dataLine.slice(6)) as ComparisonStreamEvent;
+          if (event.type === "error") throw new Error(event.error || "Comparison failed");
+          if (event.type === "factual_complete" && event.primary && event.competitors && event.comparisonId) {
+            const ids = event.competitorGenerationIds || [];
+            const next: ComparisonResult = { comparisonId: event.comparisonId, primaryGenerationId: event.primaryGenerationId, primary: event.primary, competitors: event.competitors, competitorGenerationIds: ids, competitivePositions: {}, strategistStatuses: Object.fromEntries(event.competitors.map((p) => [new URL(p.meta?.url || "https://unknown").hostname.replace(/^www\\./, ""), "idle"])) as Record<string, StrategistStatus>, blockedUrls: event.blockedUrls || {} };
+            setResult(next); persistComparison(next, validUrls); setIsLoading(false);
+            event.competitors.forEach((competitor, index) => { const domain = new URL(competitor.meta?.url || "https://unknown").hostname.replace(/^www\\./, ""); const id = ids[index]; if (id) void loadStrategist(next, id, domain, validUrls); });
+          }
+        }
+      }
+    } catch (err) { setError((err as Error).message); } finally { setIsLoading(false); }
   };
 
   const fields = [
@@ -711,14 +746,14 @@ function ComparisonTab({ primaryProfile }: { primaryProfile: BrandProfile }) {
           </Card>
 
           {/* Competitive Position */}
-          {Object.keys(result.competitivePositions).length > 0 && (
+          {result.competitors.length > 0 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
               {result.competitors.map((competitor, i) => {
                 const domain = (() => {
                   try { return new URL(competitor.meta?.url || "").hostname.replace(/^www\./, ""); } catch { return ""; }
                 })();
                 const pos = result.competitivePositions[domain];
-                if (!pos) return null;
+                const strategistStatus = result.strategistStatuses?.[domain] || "idle";
                 const competitorName = competitor.productIntelligence?.productName || competitor.meta?.brandName || domain;
                 const fields: { label: string; key: keyof typeof pos; accent?: boolean }[] = [
                   { label: "Where each of you sits", key: "categoryPosition" },
@@ -732,7 +767,11 @@ function ComparisonTab({ primaryProfile }: { primaryProfile: BrandProfile }) {
                     <div style={{ fontSize: 11, fontWeight: 600, color: "#00d4aa", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 16 }}>
                       Competitive Position vs {competitorName}
                     </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                    {!pos ? (
+                      <p style={{ fontSize: 13, color: strategistStatus === "failed" ? "rgba(255,160,120,0.85)" : "rgba(255,255,255,0.48)", lineHeight: 1.6, margin: 0 }}>
+                        {strategistStatus === "failed" ? "Evidence-bound strategist analysis is unavailable for this comparison member." : "Preparing evidence-bound analysis…"}
+                      </p>
+                    ) : <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                       {fields.map(({ label, key, accent }) => (
                         <div key={key}>
                           <div style={{ fontSize: 10, fontWeight: 600, color: "rgba(255,255,255,0.3)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 5 }}>
@@ -750,7 +789,7 @@ function ComparisonTab({ primaryProfile }: { primaryProfile: BrandProfile }) {
                           </p>
                         </div>
                       ))}
-                    </div>
+                    </div>}
                   </Card>
                 );
               })}

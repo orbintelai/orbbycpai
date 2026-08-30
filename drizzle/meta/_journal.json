@@ -29,6 +29,13 @@
       "when": 1787775200000,
       "tag": "0003_canonical_lineage",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788123928490,
+      "tag": "0004_comparison_streaming",
+      "breakpoints": true
     }
   ]
 }

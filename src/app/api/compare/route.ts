@@ -17,19 +17,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { db } from "@/db";
-import { analysisEvidence, domainLineageAliases, generations } from "@/db/schema";
-import { and, eq, desc, isNotNull } from "drizzle-orm";
+import { analysisEvidence, competitorComparisons, domainLineageAliases, generations } from "@/db/schema";
+import { and, desc, eq, isNotNull, or } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import OpenAI from "openai";
 import { extractDom } from "@/lib/pipeline/runPipeline";
 import { classifyBrand, type BrandProfile } from "@/lib/pipeline/classifyBrand";
 import { fetchAiPerception } from "@/lib/pipeline/fetchAiPerception";
 import { runCompanyIntelligence } from "@/lib/intelligence/runCompanyIntelligence";
 import { buildSnapshotLineage } from "@/lib/intelligence/lineage";
 import { AccountLimitError, PlatformCapacityError, completeFullProfileUnit, releaseFullProfileUnit, reserveFullProfileUnit } from "@/lib/usage/circuitBreaker";
+import type { CompetitivePosition } from "@/lib/competitiveStrategist";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -145,7 +145,54 @@ function detectBlockPage(
  * identify the correct company from content, not training data alone.
  * Throws SiteBlockedError if the scraped page is a WAF challenge.
  */
-async function extractFreshProfile(input: { url: string; userId: string; email: string; countTowardAccountLimit: boolean }): Promise<BrandProfile> {
+type ProfileResolution = {
+  profile: BrandProfile;
+  generationId: string;
+  cacheHit: boolean;
+};
+
+type ComparisonSseEvent =
+  | "primary_started"
+  | "profile_cached"
+  | "profile_started"
+  | "profile_completed"
+  | "profile_restricted"
+  | "factual_complete"
+  | "error";
+
+type ComparisonEvent = {
+  type: ComparisonSseEvent;
+  [key: string]: unknown;
+};
+
+function ssePayload(event: ComparisonEvent): Uint8Array {
+  return new TextEncoder().encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+}
+
+function normalizedUrlVariants(url: string): string[] {
+  const normalized = normalizeUrl(url);
+  try {
+    const parsed = new URL(normalized);
+    const bareHost = parsed.hostname.replace(/^www\./, "");
+    const path = parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/$/, "");
+    return Array.from(new Set([
+      normalized,
+      `https://${bareHost}${path}`,
+      `https://${bareHost}${path}/`,
+      `https://www.${bareHost}${path}`,
+      `https://www.${bareHost}${path}/`,
+    ]));
+  } catch {
+    return [normalized];
+  }
+}
+
+/**
+ * Run a fresh profile. The reservation happens only in this function, after a
+ * competitor has missed the cache. A reused competitor therefore consumes no
+ * reservation or completion unit.
+ */
+async function extractFreshProfile(input: { url: string; userId: string; email: string; countTowardAccountLimit: boolean }): Promise<ProfileResolution> {
   const normalizedUrl = normalizeUrl(input.url);
   const reservation = await reserveFullProfileUnit({ userId: input.userId, email: input.email, countTowardAccountLimit: input.countTowardAccountLimit });
   const workDir = path.join(os.tmpdir(), `orb-compare-${randomUUID()}`);
@@ -180,17 +227,13 @@ async function extractFreshProfile(input: { url: string; userId: string; email: 
     profile.companyIntelligence = intelligence.intelligence;
 
     const domain = lineage.registrableDomain || normalizeDomain(normalizedUrl);
-    // The immutable ledger's unique key is global per domain. Re-read and retry
-    // only when a concurrent report claims the same next snapshot version first.
     const completedAt = new Date();
     let generation: { id: string } | undefined;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const previous = await db.select({ id: generations.id, snapshotVersion: generations.snapshotVersion })
         .from(generations)
         .where(and(
-          lineage.registrableDomain
-            ? eq(generations.registrableDomain, lineage.registrableDomain)
-            : eq(generations.domain, domain),
+          lineage.registrableDomain ? eq(generations.registrableDomain, lineage.registrableDomain) : eq(generations.domain, domain),
           isNotNull(generations.snapshotVersion),
           eq(generations.status, "complete"),
         ))
@@ -225,11 +268,7 @@ async function extractFreshProfile(input: { url: string; userId: string; email: 
       }
     }
     if (!generation) throw new Error("Unable to allocate an immutable snapshot version.");
-    if (
-      lineage.lineageStatus === "cross_domain_redirect_pending" &&
-      lineage.submittedRegistrableDomain &&
-      lineage.registrableDomain
-    ) {
+    if (lineage.lineageStatus === "cross_domain_redirect_pending" && lineage.submittedRegistrableDomain && lineage.registrableDomain) {
       await db.insert(domainLineageAliases).values({
         aliasRegistrableDomain: lineage.submittedRegistrableDomain,
         canonicalRegistrableDomain: lineage.registrableDomain,
@@ -241,11 +280,10 @@ async function extractFreshProfile(input: { url: string; userId: string; email: 
     try {
       await completeFullProfileUnit({ userId: input.userId, email: input.email, pool: reservation.pool, accountCounted: reservation.accountCounted });
     } catch (error) {
-      // Snapshot is saved, so retain the consumed unit rather than undercounting.
       console.error("[compare] capacity finalization failed", error);
     }
     completed = true;
-    return profile;
+    return { profile, generationId: generation.id, cacheHit: false };
   } finally {
     if (!completed) {
       try { await releaseFullProfileUnit({ userId: input.userId, email: input.email, pool: reservation.pool, accountCounted: reservation.accountCounted }); } catch (error) { console.error("[compare] capacity release failed", error); }
@@ -255,252 +293,116 @@ async function extractFreshProfile(input: { url: string; userId: string; email: 
 }
 
 /**
- * For competitors: check the generations table for a recent record.
- * Falls back to a fresh extraction if none found or record is stale.
+ * Resolve a reusable competitor before any capacity reservation. A pending
+ * cross-domain redirect is never matched through a different registrable
+ * domain; matching by submitted URL is permitted for that exact prior input.
  */
-async function getCompetitorProfile(url: string, forceRefresh: boolean, userId: string, email: string): Promise<BrandProfile> {
+async function getCompetitorProfile(url: string, forceRefresh: boolean, userId: string, email: string): Promise<ProfileResolution> {
   const normalized = normalizeUrl(url);
-
+  const submittedLineage = buildSnapshotLineage({ submittedUrl: normalized });
   if (!forceRefresh) {
-    // Look for a recent complete generations record for this URL
-    const recent = await db
-      .select()
+    const variants = normalizedUrlVariants(normalized);
+    const cacheIdentity = submittedLineage.registrableDomain
+      ? or(eq(generations.registrableDomain, submittedLineage.registrableDomain), eq(generations.brandUrl, normalized), eq(generations.submittedUrl, normalized))
+      : or(...variants.map((variant) => eq(generations.brandUrl, variant)));
+    const recent = await db.select()
       .from(generations)
-      .where(eq(generations.brandUrl, normalized))
-      .orderBy(desc(generations.createdAt))
+      .where(and(cacheIdentity, eq(generations.status, "complete")))
+      .orderBy(desc(generations.completedAt), desc(generations.createdAt))
       .limit(1);
-
-    if (recent.length > 0 && recent[0].status === "complete" && recent[0].brandProfile) {
-      const ageMs = Date.now() - new Date(recent[0].createdAt).getTime();
+    const cached = recent[0];
+    if (cached?.brandProfile) {
+      const ageMs = Date.now() - new Date(cached.completedAt || cached.createdAt).getTime();
       if (ageMs < COMPETITOR_CACHE_MAX_AGE_MS) {
-        console.log(`[compare] Using cached generations record for ${normalized} (age: ${Math.round(ageMs / 3600000)}h)`);
-        return recent[0].brandProfile as unknown as BrandProfile;
+        console.log(`[compare] Using cached generation ${cached.id} for ${normalized} (age: ${Math.round(ageMs / 3600000)}h)`);
+        return { profile: cached.brandProfile as unknown as BrandProfile, generationId: cached.id, cacheHit: true };
       }
     }
   }
-
   console.log(`[compare] Running fresh extraction for competitor: ${normalized}`);
   return extractFreshProfile({ url: normalized, userId, email, countTowardAccountLimit: false });
 }
 
-// ─── Competitive Position prompt ─────────────────────────────────────────────
-
-interface CompetitivePosition {
-  categoryPosition: string;
-  positioningOverlap: string;
-  positioningGap: string;
-  narrativeTension: string;
-  recommendedMove: string;
-}
-
-type StrategistModelAnalysis = {
-  model: string;
-  categoryAnchor?: string;
-  positioningDelta?: string;
-};
-
-type StrategistCompanyInput = {
-  name: string;
-  firstParty: {
-    productClaims: string[];
-    pricingStatement?: string;
-    integrations: string[];
-    complianceClaims: string[];
+async function mapWithConcurrency<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const runWorker = async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      results[index] = await worker(items[index]);
+    }
   };
-  aiPerception: StrategistModelAnalysis[];
-};
-
-type StrategistComparisonInput = {
-  primary: StrategistCompanyInput;
-  competitor: StrategistCompanyInput;
-};
-
-function strategistCompanyInput(profile: BrandProfile, fallbackName: string): StrategistCompanyInput {
-  const intelligence = profile.companyIntelligence;
-  const perception = profile.aiPerception;
-  const perceptionEntries: Array<[string, typeof perception extends undefined ? never : NonNullable<typeof perception>["openai"] | undefined]> = [
-    ["OpenAI", perception?.openai],
-    ["Anthropic", perception?.anthropic],
-    ["Google", perception?.google],
-  ];
-  return {
-    name: profile.meta?.brandName || fallbackName,
-    firstParty: {
-      productClaims: intelligence?.productPricing?.productClaims?.slice(0, 6) || [],
-      pricingStatement: intelligence?.productPricing?.pricingStatement,
-      integrations: intelligence?.integrations?.slice(0, 12).map((item) => item.name) || [],
-      complianceClaims: intelligence?.compliance?.slice(0, 6).map((item) => item.claim) || [],
-    },
-    aiPerception: perceptionEntries.flatMap(([model, entry]) => entry && (entry.categoryAnchor || entry.positioningDelta)
-      ? [{ model, categoryAnchor: entry.categoryAnchor, positioningDelta: entry.positioningDelta }]
-      : []),
-  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, runWorker));
+  return results;
 }
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function hasDirectionalEvidence(primaryName: string, competitor: StrategistCompanyInput): boolean {
-  const primaryPattern = new RegExp(`\\b${escapeRegExp(primaryName)}\\b`, "i");
-  // Narrative pressure on a competitor requires evidence from the competitor's own
-  // model analysis. Shared categories or the primary company's claims prove overlap,
-  // not that the competitor experiences pressure from this specific company.
-  return competitor.aiPerception.some((entry) => primaryPattern.test(`${entry.categoryAnchor || ""} ${entry.positioningDelta || ""}`));
-}
-
-export function enforceDirectionalNarrativeTension(primaryName: string, competitor: StrategistCompanyInput, narrativeTension: string): string {
-  if (hasDirectionalEvidence(primaryName, competitor)) return narrativeTension;
-  return `No directional competitive pressure is supported by this record: none of ${competitor.name}'s available OpenAI, Anthropic, or Google analyses names ${primaryName}.`;
-}
-
-function unavailableCompetitivePosition(): CompetitivePosition {
-  return {
-    categoryPosition: "Analysis unavailable.",
-    positioningOverlap: "Analysis unavailable.",
-    positioningGap: "Analysis unavailable.",
-    narrativeTension: "Analysis unavailable.",
-    recommendedMove: "Analysis unavailable.",
-  };
-}
-
-async function generateCompetitivePosition(
-  primaryProfile: BrandProfile,
-  competitorProfile: BrandProfile
-): Promise<CompetitivePosition> {
-  const client = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY || process.env.OPENAI_KEY,
-    baseURL: "https://api.openai.com/v1",
-  });
-  const comparisonInput: StrategistComparisonInput = {
-    primary: strategistCompanyInput(primaryProfile, "Primary company"),
-    competitor: strategistCompanyInput(competitorProfile, "Competitor"),
-  };
-  const { primary, competitor } = comparisonInput;
-  const hasReciprocalDirectionality = hasDirectionalEvidence(primary.name, competitor);
-
-  const prompt = `You are Orb’s evidence-bound Brand Strategist. Analyze the primary company against exactly one accessible competitor.
-
-Your only permitted inputs are the structured comparison object below. First-party fields are factual claims published by the company. AI Perception fields are model analysis and identify the individual model. Do not browse. Do not use background knowledge. Do not introduce customers, category facts, pricing, product features, market share, analyst opinions, or competitive claims absent from the input.
-
-Return ONLY JSON with exactly these string fields: categoryPosition, positioningOverlap, positioningGap, narrativeTension, recommendedMove.
-
-Rules:
-1. Write no more than three concise sentences per field.
-2. Name the input behind each conclusion inline.
-3. Say “first-party claim” for factual inputs and identify OpenAI, Anthropic, or Google for model analysis.
-4. If the record does not support a conclusion, say so plainly rather than filling the gap.
-5. Do not assume the primary company wins; state a competitor strength when the inputs support it.
-6. recommendedMove must recommend one specific sales or positioning move rooted in a primary-company input and name that input.
-7. Use a neutral analytical tone; avoid superlatives and unsupported certainty.
-8. When the evidence supports a clear conclusion, state it plainly; false balance is not neutrality.
-9. When models disagree on category placement, report the divergence and name which model said what; do not average it into a false consensus.
-10. When both companies have pricing or business-model evidence, state the supported economic implication of that difference.
-11. recommendedMove must say what a representative should say or ask on a call, not merely what to emphasize. It must be executable without translation.
-12. Directionality is strict: state that the primary company creates pressure on, exposes, or threatens the competitor only if the competitor’s own AI Perception categoryAnchor or positioningDelta explicitly names the primary company. Shared category, product overlap, or the primary company’s self-description are not directional evidence. If no directional evidence exists, narrativeTension must say that no directional competitive pressure is supported by this record.
-
-Comparison input:
-${JSON.stringify(comparisonInput)}`;
-
-  try {
-    const response = await client.chat.completions.create({
-      model: "gpt-4o-mini",
-      max_tokens: 1000,
-      temperature: 0.2,
-      messages: [{ role: "user", content: prompt }],
-    });
-    const text = response.choices[0]?.message?.content?.trim() ?? "";
-    const match = text.match(/\{[\s\S]*\}/);
-    const parsed = JSON.parse(match ? match[0] : text) as Partial<CompetitivePosition>;
-    const result: CompetitivePosition = {
-      categoryPosition: parsed.categoryPosition || "Analysis unavailable.",
-      positioningOverlap: parsed.positioningOverlap || "Analysis unavailable.",
-      positioningGap: parsed.positioningGap || "Analysis unavailable.",
-      narrativeTension: parsed.narrativeTension || "Analysis unavailable.",
-      recommendedMove: parsed.recommendedMove || "Analysis unavailable.",
-    };
-    result.narrativeTension = hasReciprocalDirectionality
-      ? result.narrativeTension
-      : enforceDirectionalNarrativeTension(primary.name, competitor, result.narrativeTension);
-    return result;
-  } catch (err) {
-    console.error("[compare] competitivePosition generation failed:", (err as Error).message);
-    return unavailableCompetitivePosition();
-  }
-}
-
-// ─── Main handler ─────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
   const session = await auth();
   const userId = (session?.user as { id?: string } | undefined)?.id;
   const email = (session?.user as { email?: string } | undefined)?.email?.toLowerCase() || "";
-  if (!userId || !email) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  if (!userId || !email) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   let body: { primaryUrl?: string; competitorUrls?: string[]; forceRefresh?: boolean };
-  try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
-  }
-
+  try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 }); }
   const { primaryUrl, competitorUrls = [], forceRefresh = false } = body;
-  if (!primaryUrl) {
-    return NextResponse.json({ error: "primaryUrl is required" }, { status: 400 });
-  }
-  if (competitorUrls.length > 3) {
-    return NextResponse.json({ error: "Maximum 3 competitor URLs allowed" }, { status: 400 });
-  }
+  if (!primaryUrl) return NextResponse.json({ error: "primaryUrl is required" }, { status: 400 });
+  if (competitorUrls.length > 3) return NextResponse.json({ error: "Maximum 3 competitor URLs allowed" }, { status: 400 });
 
-  try {
-    // Primary: always fresh (no cache)
-    const primaryProfile = await extractFreshProfile({ url: normalizeUrl(primaryUrl), userId, email, countTowardAccountLimit: true });
-
-    // Competitors: 7-day cache from generations, unless forceRefresh.
-    // SiteBlockedError is caught per-competitor — blocked URLs are skipped
-    // and surfaced in the response rather than aborting the whole comparison.
-    const blockedUrls: Record<string, string> = {}; // domain -> input URL
-    const competitorResults = await Promise.all(
-      competitorUrls.map(async (url) => {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const emit = (event: ComparisonEvent) => controller.enqueue(ssePayload(event));
+      void (async () => {
         try {
-          return await getCompetitorProfile(url, forceRefresh, userId, email);
-        } catch (err) {
-          if (err instanceof SiteBlockedError) {
-            const domain = normalizeDomain(url);
-            blockedUrls[domain] = url;
-            console.warn(`[compare] Skipping blocked competitor: ${url}`);
-            return null;
-          }
-          throw err; // re-throw unexpected errors
+          emit({ type: "primary_started", url: normalizeUrl(primaryUrl) });
+          const primary = await extractFreshProfile({ url: normalizeUrl(primaryUrl), userId, email, countTowardAccountLimit: true });
+          const blockedUrls: Record<string, string> = {};
+          const competitors = await mapWithConcurrency(competitorUrls, 2, async (url) => {
+            try {
+              const resolved = await getCompetitorProfile(url, forceRefresh, userId, email);
+              emit({ type: resolved.cacheHit ? "profile_cached" : "profile_completed", url: normalizeUrl(url), generationId: resolved.generationId });
+              return resolved;
+            } catch (error) {
+              if (error instanceof SiteBlockedError) {
+                const domain = normalizeDomain(url);
+                blockedUrls[domain] = url;
+                emit({ type: "profile_restricted", url, reason: "This site blocks automated analysis." });
+                return null;
+              }
+              throw error;
+            }
+          });
+          const accessible = competitors.filter((item): item is ProfileResolution => item !== null);
+          const comparisonInserted = await db.insert(competitorComparisons).values({
+            userId,
+            primaryBrandDomain: normalizeDomain(primary.profile.meta?.url || primaryUrl),
+            competitorDomains: accessible.map((item) => normalizeDomain(item.profile.meta?.url || "")),
+            primaryProfile: primary.profile as unknown as Record<string, unknown>,
+            competitorProfiles: accessible.map((item) => item.profile) as unknown as Record<string, unknown>,
+            uspStatements: {},
+            primaryGenerationId: primary.generationId,
+            competitorGenerationIds: accessible.map((item) => item.generationId),
+          }).returning({ id: competitorComparisons.id });
+          const comparisonId = comparisonInserted[0]?.id;
+          if (!comparisonId) throw new Error("Unable to persist comparison membership.");
+          emit({
+            type: "factual_complete",
+            comparisonId,
+            primaryGenerationId: primary.generationId,
+            primary: primary.profile,
+            competitors: accessible.map((item) => item.profile),
+            competitorGenerationIds: accessible.map((item) => item.generationId),
+            blockedUrls,
+          });
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error("[compare] Error:", message);
+          const code = error instanceof AccountLimitError ? "monthly_report_limit_reached" : error instanceof PlatformCapacityError ? "beta_capacity_paused" : "comparison_failed";
+          emit({ type: "error", error: message, code });
+        } finally {
+          controller.close();
         }
-      })
-    );
-    const competitorProfiles = competitorResults.filter((p): p is BrandProfile => p !== null);
-
-    // Generate structured competitive position for each accessible competitor
-    const competitivePositions: Record<string, CompetitivePosition> = {};
-    await Promise.all(
-      competitorProfiles.map(async (competitor) => {
-        const domain = normalizeDomain(competitor.meta?.url || "");
-        competitivePositions[domain] = await generateCompetitivePosition(primaryProfile, competitor);
-      })
-    );
-
-    return NextResponse.json({
-      comparison: {
-        primary: primaryProfile,
-        competitors: competitorProfiles,
-        competitivePositions,
-        // blockedUrls: { [domain]: inputUrl } for each competitor that returned a WAF page
-        blockedUrls,
-      },
-    });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error("[compare] Error:", message);
-    if (err instanceof AccountLimitError || err instanceof PlatformCapacityError) return NextResponse.json({ error: message, code: err instanceof AccountLimitError ? "monthly_report_limit_reached" : "beta_capacity_paused" }, { status: 429 });
-    return NextResponse.json({ error: message }, { status: 500 });
-  }
+      })();
+    },
+  });
+  return new Response(stream, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive" } });
 }

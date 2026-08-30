@@ -267,12 +267,37 @@ export const competitorComparisons = pgTable(
     primaryProfile: jsonb("primary_profile").notNull(),
     competitorProfiles: jsonb("competitor_profiles").notNull(), // BrandProfile[]
     uspStatements: jsonb("usp_statements").notNull(), // { [domain]: CompetitivePosition }
+    // New comparisons record immutable generation membership. Legacy rows remain readable.
+    primaryGenerationId: uuid("primary_generation_id").references(() => generations.id, { onDelete: "set null" }),
+    competitorGenerationIds: jsonb("competitor_generation_ids"), // string[], aligned to competitorProfiles
     createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
   },
   (table) => ({
     userIdx: index("competitor_comparisons_user_id_idx").on(table.userId),
     primaryIdx: index("competitor_comparisons_primary_idx").on(table.primaryBrandDomain),
     createdIdx: index("competitor_comparisons_created_at_idx").on(table.createdAt),
+    primaryGenerationIdx: index("competitor_comparisons_primary_generation_idx").on(table.primaryGenerationId),
+  })
+);
+
+// One record per authorized comparison member. A persisted completed result is reused
+// after reload; a pending row prevents duplicate strategist model calls.
+export const competitorStrategistResults = pgTable(
+  "competitor_strategist_results",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    comparisonId: uuid("comparison_id").notNull().references(() => competitorComparisons.id, { onDelete: "cascade" }),
+    primaryGenerationId: uuid("primary_generation_id").notNull().references(() => generations.id, { onDelete: "cascade" }),
+    competitorGenerationId: uuid("competitor_generation_id").notNull().references(() => generations.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("pending"),
+    result: jsonb("result"), // CompetitivePosition when status is complete
+    errorMessage: text("error_message"),
+    createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { mode: "date" }).defaultNow().notNull(),
+  },
+  (table) => ({
+    comparisonMemberUnique: unique("competitor_strategist_results_comparison_member_unique").on(table.comparisonId, table.competitorGenerationId),
+    comparisonIdx: index("competitor_strategist_results_comparison_idx").on(table.comparisonId),
   })
 );
 

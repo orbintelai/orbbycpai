@@ -343,3 +343,33 @@ Do not restore Paessler’s historical `Apple Watch` Integration result. It link
 The historical eight-domain raw published count of 14 includes this false positive. The valid comparison baseline is therefore **13 published**.
 
 ---
+
+## 26. Resolved-Host Probes and Homepage Structured People Data
+
+### Rule
+
+After the initial homepage request resolves, all first-party root and nested probes must be constructed from the final resolved homepage URL and evaluated against its registrable domain. The submitted input URL remains the lineage input, but it must not determine crawl paths after a valid redirect.
+
+People extraction always evaluates the already-fetched homepage, including valid `application/ld+json` Person records, before source-route outcomes determine absence. Homepage JSON-LD is first-party evidence even when a static SPA shell has little visible text.
+
+### Why
+
+`anagram.io` resolves to `anagramhq.com`; building probes from the submitted host sent every guessed people path to the wrong host and produced HTTP 404 despite a published `/about-us/` page with five named people. TylerMatheny.com publishes a Person JSON-LD record in the document head while its visible SPA body is only a static shell. Structured data must not be excluded by source-route candidate selection.
+
+---
+
+## 27. Evidence-Bound Competitive Strategist and Directionality
+
+### Rule
+
+Competitive Position uses a dedicated strategist restricted to a pre-filtered object containing only first-party Product & Pricing, Integrations, and Compliance claims plus labelled OpenAI, Anthropic, and Google Category Anchor and Positioning Delta outputs. It does not browse or use unprovided background knowledge. Every conclusion names its evidence type and source inline.
+
+The five visible sections remain prose: **Where each of you sits**, **What you both claim**, **What only you can say**, **Where they’re exposed**, and **What to lead with**. Each is capped at three concise sentences. The final sales move must be executable language a representative can say or ask, rooted in a primary-company input.
+
+Directional competitive-pressure claims are stricter than overlap claims. The strategist may state that the primary company pressures, exposes, or threatens a competitor only when the competitor’s own Category Anchor or Positioning Delta explicitly names the primary company. Shared category membership, one-sided positioning, or a primary first-party claim is insufficient. Otherwise the narrative-tension field must explicitly say that no directional pressure is supported by the record.
+
+### Why
+
+A prior comparison asserted that Richpanel creates pressure on Zendesk, Gorgias, and Gladly even though their own model category anchors did not name Richpanel. That is an unsupported directional claim. Evidence-supported overlap may remain useful, but it cannot be upgraded to reciprocal competitive pressure without reciprocal evidence.
+
+---

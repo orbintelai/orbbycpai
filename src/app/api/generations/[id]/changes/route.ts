@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, lt } from "drizzle-orm";
 import { auth } from "@/auth";
 import { db } from "@/db";
 import { generations } from "@/db/schema";
@@ -22,9 +22,22 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ id
   const current = currentRows[0];
   if (!current?.brandProfile) return NextResponse.json({ error: "Report not found" }, { status: 404 });
 
+  // Current-report access is private. Snapshot lineage is intentionally global,
+  // so the predecessor must not be filtered to the current account.
   const previousRows = current.previousGenerationId
-    ? await db.select().from(generations).where(and(eq(generations.id, current.previousGenerationId), eq(generations.userId, userId))).limit(1)
-    : [];
+    ? await db.select().from(generations).where(eq(generations.id, current.previousGenerationId)).limit(1)
+    : current.registrableDomain && current.snapshotVersion !== null
+      ? await db
+        .select()
+        .from(generations)
+        .where(and(
+          eq(generations.registrableDomain, current.registrableDomain),
+          eq(generations.status, "complete"),
+          lt(generations.snapshotVersion, current.snapshotVersion),
+        ))
+        .orderBy(desc(generations.snapshotVersion), desc(generations.completedAt))
+        .limit(1)
+      : [];
   const previous = previousRows[0];
   const result = buildWhatChanged({
     previous: previous?.brandProfile as BrandProfile | undefined,

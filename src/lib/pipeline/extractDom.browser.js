@@ -225,7 +225,10 @@ window.__orbExtract = function () {
   // ═══════════════════════════════════════════════════════════════════════
 
   function cleanFamily(raw) {
-    return raw.split(",")[0].trim().replace(/['"]/g, "");
+    var family = raw.split(",")[0].trim().replace(/['"]/g, "");
+    var compact = family.replace(/[\s_-]/g, "").toLowerCase();
+    if (compact === "dmsans") return "DM Sans";
+    return family;
   }
 
   function brandFamily(raw) {

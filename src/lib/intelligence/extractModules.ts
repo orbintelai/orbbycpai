@@ -507,10 +507,66 @@ export function extractIntegrations(manifest: SourceManifest): ModuleResult<Inte
   return { value, evidence: evidenceDrafts, status: statusFor("integrations", manifest, startedAt, value.length > 0, "No public integrations directory found.") };
 }
 
+type ProductTextCandidate = { text: string; page: SourcePage };
+
+const CLAIM_STOP_WORDS = new Set(["a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "into", "is", "it", "of", "on", "or", "our", "the", "that", "to", "with", "you", "your"]);
+
+function claimTokens(value: string): Set<string> {
+  return new Set(
+    value.toLowerCase().match(/[a-z0-9]+/g)?.filter((token) => token.length > 2 && !CLAIM_STOP_WORDS.has(token)) || [],
+  );
+}
+
+function isOutcomeGuarantee(value: string): boolean {
+  return /\b(guarantee|guaranteed|we(?:’|'|’)ll pay|full refund|results? (?:in|within) (?:the )?first \d+ days)\b/i.test(value);
+}
+
+function quantifiedOutcomeThemes(value: string): string[] {
+  if (!/(?:\d+\s?%|guarantee|guaranteed|refund)/i.test(value)) return [];
+  const themes: string[] = [];
+  if (/\b(cost|costs|saving|savings|bill|price|pricing)\b/i.test(value)) themes.push("cost");
+  if (/\b(ticket|tickets|support)\b/i.test(value)) themes.push("ticket");
+  if (/\b(automation|automate|automated)\b/i.test(value)) themes.push("automation");
+  if (/\b(refund|we(?:’|'|’)ll pay)\b/i.test(value)) themes.push("refund");
+  return themes;
+}
+
+function nearDuplicateClaim(candidate: string, selected: string[]): boolean {
+  const candidateTokens = claimTokens(candidate);
+  const candidateThemes = quantifiedOutcomeThemes(candidate);
+  return selected.some((existing) => {
+    if (existing.toLowerCase() === candidate.toLowerCase()) return true;
+    if (isOutcomeGuarantee(candidate) && isOutcomeGuarantee(existing)) return true;
+    const existingThemes = quantifiedOutcomeThemes(existing);
+    if (candidateThemes.some((theme) => existingThemes.includes(theme))) return true;
+    const existingTokens = claimTokens(existing);
+    const overlap = [...candidateTokens].filter((token) => existingTokens.has(token)).length;
+    const denominator = Math.min(candidateTokens.size, existingTokens.size);
+    return denominator > 0 && overlap / denominator >= 0.78;
+  });
+}
+
+function isProductClaimCandidate(value: string): boolean {
+  if (/^(?:select|choose|view) (?:the )?product to (?:view|see) pricing$/i.test(value)) return false;
+  if (/\b(?:pricing|plan|feature) table\b/i.test(value)) return false;
+  if (/^(?:automation success kit|compare plans|pricing|the richpanel double-savings offer|real results from real brands)$/i.test(value)) return false;
+  return true;
+}
+
+function pricingPriority(value: string): number {
+  let score = 0;
+  if (/(?:\$|€|£)\s?\d|\d+\s?(?:\/|per\s+)(?:seat|user|month|year|conversation|credit)/i.test(value)) score += 10;
+  if (/\b(?:starts? at|minimum|billed|monthly|annual|annually)\b|\bfrom\s+(?:[$€£]|\d)/i.test(value)) score += 5;
+  if (/\b(?:pricing|price|cost|custom pricing|quote)\b/i.test(value)) score += 2;
+  if (/\b(?:contact|talk to) sales\b/i.test(value)) score += 1;
+  return score;
+}
+
 export function extractProductPricing(manifest: SourceManifest): ModuleResult<ProductPricingSignal> {
   const startedAt = Date.now();
   const pages = relevantPages(manifest, "productPricing");
-  const claims: string[] = [];
+  const productCandidates: ProductTextCandidate[] = [];
+  const pricingCandidates: ProductTextCandidate[] = [];
   const targetCustomers: string[] = [];
   const evidenceDrafts: EvidenceDraft[] = [];
   const evidenceReferences: EvidenceReference[] = [];
@@ -522,34 +578,48 @@ export function extractProductPricing(manifest: SourceManifest): ModuleResult<Pr
   for (const page of pages) {
     const $ = cheerio.load(page.contentHtml || page.html);
     $("h1,h2,h3,p,li").each((_, element) => {
-      const value = $(element).text().replace(/\s+/g, " ").trim();
-      if (value.length < 20 || value.length > 360) return;
-      if (/\b(pricing|\$\d|per month|contact sales|talk to sales|custom pricing|quote)\b/i.test(value) && !pricingStatement) {
-        pricingStatement = textExcerpt(value, 300);
-        const record = evidence("productPricing", "pricing", "pricing", "productPricing.pricing", page, value);
-        evidenceDrafts.push(record.draft);
-        evidenceReferences.push(record.reference);
-        pricingEvidence = [record.reference];
-      }
-      if (/\b(for |built for |designed for |teams?|companies|enterprises?|developers?|marketers?|sales)\b/i.test(value) && targetCustomers.length < 4) {
-        const claim = textExcerpt(value, 240);
+      const text = $(element).text().replace(/\s+/g, " ").trim();
+      if (text.length < 20 || text.length > 360) return;
+      if (/\b(pricing|\$\d|per month|contact sales|talk to sales|custom pricing|quote)\b/i.test(text)) pricingCandidates.push({ text, page });
+      if (/\b(for |built for |designed for |teams?|companies|enterprises?|developers?|marketers?|sales)\b/i.test(text) && targetCustomers.length < 4) {
+        const claim = textExcerpt(text, 240);
+        if (targetCustomers.includes(claim)) return;
         targetCustomers.push(claim);
-        const record = evidence("productPricing", "target_customer", sourceHash(value).slice(0, 16), "productPricing.targetCustomers", page, value);
+        const record = evidence("productPricing", "target_customer", sourceHash(text).slice(0, 16), "productPricing.targetCustomers", page, text);
         evidenceDrafts.push(record.draft);
         evidenceReferences.push(record.reference);
         targetCustomerEvidence[claim] = [...(targetCustomerEvidence[claim] || []), record.reference];
-      } else if (claims.length < 6) {
-        const claim = textExcerpt(value, 240);
-        claims.push(claim);
-        const record = evidence("productPricing", "product_claim", sourceHash(value).slice(0, 16), "productPricing.productClaims", page, value);
-        evidenceDrafts.push(record.draft);
-        evidenceReferences.push(record.reference);
-        claimEvidence[claim] = [...(claimEvidence[claim] || []), record.reference];
+      } else if (isProductClaimCandidate(text)) {
+        productCandidates.push({ text, page });
       }
     });
     if (!primaryCta) primaryCta = $("a,button").map((_, element) => $(element).text().replace(/\s+/g, " ").trim()).get().find((value) => /^(get started|start free|request demo|book a demo|contact sales|talk to sales|sign up)$/i.test(value));
   }
-  const value: ProductPricingSignal = { productClaims: [...new Set(claims)].slice(0, 6), targetCustomerClaims: [...new Set(targetCustomers)].slice(0, 4), primaryCta, pricingStatement, claimEvidence, targetCustomerEvidence, pricingEvidence, evidence: evidenceReferences };
+
+  const selectedPricing = pricingCandidates
+    .map((candidate, index) => ({ ...candidate, index, priority: pricingPriority(candidate.text) }))
+    .sort((left, right) => right.priority - left.priority || left.index - right.index)
+    .find((candidate) => candidate.priority >= 5);
+  if (selectedPricing) {
+    pricingStatement = textExcerpt(selectedPricing.text, 300);
+    const record = evidence("productPricing", "pricing", "pricing", "productPricing.pricing", selectedPricing.page, selectedPricing.text);
+    evidenceDrafts.push(record.draft);
+    evidenceReferences.push(record.reference);
+    pricingEvidence = [record.reference];
+  }
+
+  const productClaims: string[] = [];
+  for (const candidate of productCandidates) {
+    const claim = textExcerpt(candidate.text, 240);
+    if (productClaims.length >= 6 || pricingPriority(candidate.text) > 0 || nearDuplicateClaim(claim, productClaims)) continue;
+    productClaims.push(claim);
+    const record = evidence("productPricing", "product_claim", sourceHash(candidate.text).slice(0, 16), "productPricing.productClaims", candidate.page, candidate.text);
+    evidenceDrafts.push(record.draft);
+    evidenceReferences.push(record.reference);
+    claimEvidence[claim] = [...(claimEvidence[claim] || []), record.reference];
+  }
+
+  const value: ProductPricingSignal = { productClaims, targetCustomerClaims: targetCustomers, primaryCta, pricingStatement, claimEvidence, targetCustomerEvidence, pricingEvidence, evidence: evidenceReferences };
   return { value, evidence: evidenceDrafts, status: statusFor("productPricing", manifest, startedAt, Boolean(value.productClaims.length || value.pricingStatement), "Product details not published.") };
 }
 

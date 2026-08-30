@@ -65,7 +65,7 @@ function evidence(
 
 function attemptedPages(manifest: SourceManifest, module: IntelligenceModule): SourcePage[] {
   const candidates = new Set(manifest.moduleCandidates[module]);
-  return manifest.pages.filter((page) => candidates.has(page.requestedUrl || page.url) || candidates.has(page.url) || page.sourceKind === "homepage" && module === "productPricing");
+  return manifest.pages.filter((page) => candidates.has(page.requestedUrl || page.url) || candidates.has(page.url) || page.sourceKind === "homepage" && (module === "productPricing" || module === "people"));
 }
 
 function relevantPages(manifest: SourceManifest, module: IntelligenceModule): SourcePage[] {

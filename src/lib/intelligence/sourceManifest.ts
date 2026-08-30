@@ -381,8 +381,12 @@ function selectFairCandidates(moduleCandidates: Record<IntelligenceModule, strin
 export async function buildSourceManifest(homepageUrl: string): Promise<SourceManifest> {
   const canonicalHomepage = normaliseUrl(homepageUrl);
   if (!canonicalHomepage) throw new Error("Invalid source URL");
-  const rootHostname = new URL(canonicalHomepage).hostname;
   const homepage = await fetchSourcePage(canonicalHomepage, "homepage");
+  // The submitted hostname may redirect across a registrable-domain boundary
+  // (for example, anagram.io → anagramhq.com). Discovery must probe the site
+  // that actually served the homepage, not the submitted hostname's dead paths.
+  const resolvedHomepage = (homepage ? normaliseUrl(homepage.url) : null) || canonicalHomepage;
+  const rootHostname = new URL(resolvedHomepage).hostname;
   const homepageContentHash = homepage?.text ? sourceHash(homepage.text) : undefined;
   const moduleCandidates: Record<IntelligenceModule, string[]> = {
     people: [],
@@ -414,7 +418,7 @@ export async function buildSourceManifest(homepageUrl: string): Promise<SourceMa
   const atsCandidates: Array<{ url: string; linkedFrom: string }> = [];
   for (const link of homepageLinks) {
     if (link.target === "ats") {
-      atsCandidates.push({ url: link.url, linkedFrom: canonicalHomepage });
+      atsCandidates.push({ url: link.url, linkedFrom: resolvedHomepage });
       moduleCandidates.hiring.push(link.url);
       continue;
     }
@@ -435,13 +439,13 @@ export async function buildSourceManifest(homepageUrl: string): Promise<SourceMa
     for (const pattern of PATH_PATTERNS[module]) {
       const candidates = pattern.source.match(/\(([^)]+)\)/)?.[1]?.split("|") ?? [];
       for (const candidate of candidates) {
-        const url = new URL(`/${candidate}`, canonicalHomepage).toString();
+        const url = new URL(`/${candidate}`, resolvedHomepage).toString();
         firstPartyCandidates.add(url);
         moduleCandidates[module].push(url);
       }
     }
     for (const path of NESTED_PROBE_PATHS[module]) {
-      const url = new URL(`/${path}`, canonicalHomepage).toString();
+      const url = new URL(`/${path}`, resolvedHomepage).toString();
       firstPartyCandidates.add(url);
       moduleCandidates[module].push(url);
     }
@@ -476,7 +480,7 @@ export async function buildSourceManifest(homepageUrl: string): Promise<SourceMa
   const orderedCandidates = [...selectedCandidates]
     .filter((url) => firstPartyHost(new URL(url).hostname, rootHostname));
 
-  const fetchedPages = await boundedMap(orderedCandidates, async (url) => fetchSourcePage(url, "first_party", canonicalHomepage, homepageContentHash));
+  const fetchedPages = await boundedMap(orderedCandidates, async (url) => fetchSourcePage(url, "first_party", resolvedHomepage, homepageContentHash));
   const successfulFirstPartyPages = fetchedPages.filter((page): page is SourcePage => Boolean(page?.httpStatus && !page.fetchError));
   const abortedFirstPartyPages = fetchedPages.filter((page) => page?.fetchError === "This operation was aborted");
   const spaCatchAllWithAborts = successfulFirstPartyPages.length > 0
@@ -489,6 +493,10 @@ export async function buildSourceManifest(homepageUrl: string): Promise<SourceMa
     // remaining route probes timed out. Retain only the homepage so this becomes
     // honest source absence rather than an availability failure for every module.
     for (const module of Object.keys(moduleCandidates) as IntelligenceModule[]) moduleCandidates[module] = [];
+    // Keep the honest homepage available to People extraction. `extractPeople`
+    // reads JSON-LD from raw HTML, so valid Person schema remains first-party
+    // evidence even when the visible body is an SPA shell.
+    if (homepage) moduleCandidates.people = [homepage.requestedUrl || homepage.url];
   } else {
     for (const page of fetchedPages) {
       if (!page) continue;
@@ -518,8 +526,8 @@ export async function buildSourceManifest(homepageUrl: string): Promise<SourceMa
   }
 
   return {
-    origin: new URL(canonicalHomepage).origin,
-    homepageUrl: canonicalHomepage,
+    origin: new URL(resolvedHomepage).origin,
+    homepageUrl: resolvedHomepage,
     pages,
     moduleCandidates,
     blockedUrls,

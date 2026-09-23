@@ -42,40 +42,15 @@ function EvidenceLinks({ items }: { items?: EvidenceReference[] }) {
 }
 
 function ModuleHeading({ module, status }: { module: IntelligenceModule; status?: ModuleStatus }) {
-  const tone = status?.status === "published" ? "#50e3c2" : status?.status === "blocked" ? "#f3b562" : status?.status === "source_not_found" ? "rgba(255,255,255,0.38)" : "#e6b7ff";
-  const text = status?.status === "published"
-    ? "First-party source"
-    : status?.status === "blocked"
-      ? "Source restricted access"
-      : status?.status === "source_not_found"
-        ? "No source found"
-        : status?.status === "source_empty"
-          ? "Content loads dynamically"
-          : status?.status === "source_found_unparsed"
-            ? "Found a source we couldn't read"
-            : "Source unavailable";
-  const sourceUrl = status?.status === "source_empty" || status?.status === "source_found_unparsed"
-    ? status.sourceUrl || status.crawledUrls?.[0]
-    : undefined;
+  const tone = status?.status === "published" ? "#50e3c2" : status?.status === "blocked" ? "#f3b562" : "rgba(255,255,255,0.38)";
+  const text = status?.status === "published" ? "First-party source" : status?.status === "blocked" ? "Source restricted access" : "No source found";
   const style: React.CSSProperties = { color: tone, fontSize: 10, border: `1px solid ${tone}33`, borderRadius: 99, padding: "3px 8px", whiteSpace: "nowrap" };
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
       <div style={{ fontSize: 12, fontWeight: 700, color: "rgba(255,255,255,0.82)", letterSpacing: "0.01em" }}>{LABELS[module]}</div>
-      {sourceUrl ? <a href={sourceUrl} target="_blank" rel="noreferrer" title={`${status?.reason || ""}\n\nOpen source: ${sourceUrl}`} style={{ ...style, textDecoration: "none" }}>{text}</a> : <span title={status?.reason || ""} style={style}>{text}</span>}
+      <span title={status?.reason || ""} style={style}>{text}</span>
     </div>
   );
-}
-
-function SourceLimitation({ status }: { status?: ModuleStatus }) {
-  const sourceUrl = status?.status === "source_empty" || status?.status === "source_found_unparsed"
-    ? status.sourceUrl || status.crawledUrls?.[0]
-    : undefined;
-  const copy = status?.status === "source_empty"
-    ? "This page loads its content dynamically"
-    : status?.status === "source_found_unparsed"
-      ? "Found a first-party source we couldn’t read"
-      : status?.reason || "The relevant first-party source could not be interpreted in this run.";
-  return <p style={{ margin: 0, color: "rgba(255,255,255,0.48)", fontSize: 12, lineHeight: 1.6 }}>{copy}{sourceUrl ? <> — <a href={sourceUrl} target="_blank" rel="noreferrer" style={{ color: "#50e3c2", textDecoration: "none" }}>{status?.status === "source_empty" ? "open it directly ↗" : "Open source ↗"}</a></> : "."}</p>;
 }
 
 function ModuleCard({ module, status, children }: { module: IntelligenceModule; status?: ModuleStatus; children: React.ReactNode }) {
@@ -93,6 +68,10 @@ function CoverageStrip({ statuses }: { statuses: CompanyIntelligence["moduleStat
   );
 }
 
+function Subheading({ children }: { children: React.ReactNode }) {
+  return <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 7 }}>{children}</div>;
+}
+
 export function CompanyIntelligencePanel({ profile, generationId }: { profile: { companyIntelligence?: CompanyIntelligence }; generationId: string }) {
   const intel = profile.companyIntelligence;
   const [showAllCompliance, setShowAllCompliance] = useState(false);
@@ -100,35 +79,65 @@ export function CompanyIntelligencePanel({ profile, generationId }: { profile: {
 
   if (!intel) return null;
   const statuses = intel.moduleStatuses;
-  const visible = (module: IntelligenceModule, hasPublishedData: boolean) => hasPublishedData || (statuses[module]?.status !== "source_not_found" && Boolean(statuses[module]));
+  const product = intel.productPricing;
   const complianceClaims = intel.compliance || [];
   const displayedCompliance = showAllCompliance ? complianceClaims : complianceClaims.slice(0, 6);
+  // Source-state diagnostics remain available in the export and coverage strip.
+  // The on-screen report only allocates space to actionable structured facts.
+  const visible = (_module: IntelligenceModule, hasPublishedData: boolean) => hasPublishedData;
+  const hasProductData = Boolean(product?.productLines.length || product?.buyerSegments.length || product?.productClaims.length || product?.pricingStatement);
 
   return (
     <section style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 16 }}>
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, padding: "2px 2px 0" }}>
         <div>
           <div style={{ color: "#50e3c2", fontSize: 10, fontWeight: 700, letterSpacing: "0.11em", textTransform: "uppercase", marginBottom: 5 }}>Company Intelligence</div>
-          <p style={{ color: "rgba(255,255,255,0.45)", fontSize: 12, lineHeight: 1.5, margin: 0 }}>Factual signals are extracted only from first-party company sources. Hover a source label to inspect the supporting excerpt.</p>
+          <p style={{ color: "rgba(255,255,255,0.45)", fontSize: 12, lineHeight: 1.5, margin: 0 }}>Factual signals are extracted from company-published sources and linked to their supporting excerpt.</p>
         </div>
         <button onClick={download} style={{ flexShrink: 0, background: "rgba(80,227,194,0.1)", color: "#50e3c2", border: "1px solid rgba(80,227,194,0.24)", borderRadius: 8, padding: "8px 11px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>Export with sources</button>
       </div>
 
-      {visible("productPricing", Boolean(intel.productPricing?.productClaims.length || intel.productPricing?.pricingStatement)) && (
+      {visible("productPricing", hasProductData) && (
         <ModuleCard module="productPricing" status={statuses.productPricing}>
-          {intel.productPricing?.productClaims.length || intel.productPricing?.pricingStatement ? <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: 20, alignItems: "start" }}><div><div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 7 }}>Published product claims</div><div style={{ display: "flex", flexDirection: "column", gap: 6 }}>{intel.productPricing?.productClaims.slice(0, 6).map((claim) => <div key={claim} style={{ color: "rgba(255,255,255,0.68)", fontSize: 12, lineHeight: 1.45 }}>• {claim}<EvidenceLinks items={intel.productPricing?.claimEvidence?.[claim]} /></div>)}</div></div><div><div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 7 }}>Pricing / conversion</div><div style={{ color: "rgba(255,255,255,0.68)", fontSize: 12, lineHeight: 1.5 }}>{intel.productPricing?.pricingStatement || "No public pricing statement found."}<EvidenceLinks items={intel.productPricing?.pricingEvidence || intel.productPricing?.evidence} /></div>{intel.productPricing?.primaryCta && <div style={{ color: "#50e3c2", fontSize: 11, marginTop: 10 }}>Primary CTA: {intel.productPricing.primaryCta}</div>}</div></div> : <SourceLimitation status={statuses.productPricing} />}
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr) minmax(190px, 0.75fr)", gap: 20, alignItems: "start" }}>
+            <div>
+              <Subheading>What they sell</Subheading>
+              {product?.productLines.length ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {product.productLines.slice(0, 4).map((line) => <div key={`${line.name}-${line.url || ""}`}><a href={line.url || line.evidence[0]?.sourceUrl || "#"} target="_blank" rel="noreferrer" style={{ color: "rgba(255,255,255,0.84)", fontSize: 12, fontWeight: 650, textDecoration: "none" }}>{line.name}</a><EvidenceLinks items={line.evidence} />{line.summary && <div style={{ color: "rgba(255,255,255,0.48)", fontSize: 11, lineHeight: 1.5, marginTop: 3 }}>{line.summary}</div>}</div>)}
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>{product?.productClaims.slice(0, 3).map((claim) => <div key={claim} style={{ color: "rgba(255,255,255,0.68)", fontSize: 12, lineHeight: 1.45 }}>• {claim}<EvidenceLinks items={product?.claimEvidence?.[claim]} /></div>)}</div>
+              )}
+            </div>
+            <div>
+              <Subheading>Who they serve</Subheading>
+              {product?.buyerSegments.length ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {product.buyerSegments.slice(0, 4).map((segment) => <div key={`${segment.name}-${segment.url || ""}`}><a href={segment.url || segment.evidence[0]?.sourceUrl || "#"} target="_blank" rel="noreferrer" style={{ color: "rgba(255,255,255,0.84)", fontSize: 12, fontWeight: 650, textDecoration: "none" }}>{segment.name}</a><EvidenceLinks items={segment.evidence} />{segment.summary && <div style={{ color: "rgba(255,255,255,0.48)", fontSize: 11, lineHeight: 1.5, marginTop: 3 }}>{segment.summary}</div>}</div>)}
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>{product?.targetCustomerClaims.slice(0, 3).map((claim) => <div key={claim} style={{ color: "rgba(255,255,255,0.68)", fontSize: 12, lineHeight: 1.45 }}>• {claim}<EvidenceLinks items={product?.targetCustomerEvidence?.[claim]} /></div>)}</div>
+              )}
+            </div>
+            <div>
+              <Subheading>Commercial motion</Subheading>
+              <div style={{ color: "rgba(255,255,255,0.68)", fontSize: 12, lineHeight: 1.5 }}>{product?.pricingStatement || "No public pricing statement found."}<EvidenceLinks items={product?.pricingEvidence} /></div>
+              {product?.primaryCta && <div style={{ color: "#50e3c2", fontSize: 11, marginTop: 10 }}>Primary CTA: {product.primaryCta}</div>}
+            </div>
+          </div>
         </ModuleCard>
       )}
 
       {(visible("integrations", Boolean(intel.integrations?.length)) || visible("news", Boolean(intel.news?.length))) && <div style={{ display: "grid", gridTemplateColumns: "1.15fr 0.85fr", gap: 16, alignItems: "start" }}>
-        {visible("integrations", Boolean(intel.integrations?.length)) && <ModuleCard module="integrations" status={statuses.integrations}>{intel.integrations?.length ? <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>{intel.integrations.slice(0, 30).map((integration) => <a key={integration.name} href={integration.url || "#"} target="_blank" rel="noreferrer" title={integration.evidence?.[0]?.excerpt || integration.name} style={{ textDecoration: "none", fontSize: 11, border: "1px solid rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.65)", background: "rgba(255,255,255,0.04)", borderRadius: 7, padding: "6px 8px" }}>{integration.name}</a>)}</div> : <SourceLimitation status={statuses.integrations} />}</ModuleCard>}
-        {visible("news", Boolean(intel.news?.length)) && <ModuleCard module="news" status={statuses.news}>{intel.news?.length ? <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>{intel.news.slice(0, 6).map((item) => <a key={item.url} href={item.url} target="_blank" rel="noreferrer" style={{ textDecoration: "none", display: "block", borderBottom: "1px solid rgba(255,255,255,0.06)", paddingBottom: 10 }}><div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 3 }}><span style={{ color: "#50e3c2", fontSize: 9, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase" }}>{item.label}</span>{item.publishedAt && <span style={{ color: "rgba(255,255,255,0.28)", fontSize: 10 }}>{new Date(item.publishedAt).toLocaleDateString()}</span>}</div><div style={{ color: "rgba(255,255,255,0.78)", fontSize: 12, lineHeight: 1.45 }}>{item.headline}<EvidenceLinks items={item.evidence} /></div></a>)}</div> : <SourceLimitation status={statuses.news} />}</ModuleCard>}
+        {visible("integrations", Boolean(intel.integrations?.length)) && <ModuleCard module="integrations" status={statuses.integrations}><div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>{intel.integrations?.slice(0, 30).map((integration) => <a key={integration.name} href={integration.url || integration.evidence[0]?.sourceUrl || "#"} target="_blank" rel="noreferrer" title={integration.evidence?.[0]?.excerpt || integration.name} style={{ textDecoration: "none", fontSize: 11, border: "1px solid rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.65)", background: "rgba(255,255,255,0.04)", borderRadius: 7, padding: "6px 8px" }}>{integration.name}</a>)}</div></ModuleCard>}
+        {visible("news", Boolean(intel.news?.length)) && <ModuleCard module="news" status={statuses.news}><div style={{ display: "flex", flexDirection: "column", gap: 10 }}>{intel.news?.slice(0, 6).map((item) => <a key={item.url} href={item.url} target="_blank" rel="noreferrer" style={{ textDecoration: "none", display: "block", borderBottom: "1px solid rgba(255,255,255,0.06)", paddingBottom: 10 }}><div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 3 }}><span style={{ color: "#50e3c2", fontSize: 9, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase" }}>{item.label}</span>{item.publishedAt && <span style={{ color: "rgba(255,255,255,0.28)", fontSize: 10 }}>{new Date(item.publishedAt).toLocaleDateString()}</span>}</div><div style={{ color: "rgba(255,255,255,0.78)", fontSize: 12, lineHeight: 1.45 }}>{item.headline}<EvidenceLinks items={item.evidence} /></div></a>)}</div></ModuleCard>}
       </div>}
 
       {(visible("people", Boolean(intel.people?.length)) || visible("hiring", Boolean(intel.hiring?.totalOpenRoles)) || visible("compliance", Boolean(complianceClaims.length))) && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16, alignItems: "start" }}>
-        {visible("people", Boolean(intel.people?.length)) && <ModuleCard module="people" status={statuses.people}>{intel.people?.length ? <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>{intel.people.slice(0, 8).map((person) => <div key={`${person.name}-${person.title}`} style={{ display: "flex", gap: 9, alignItems: "flex-start" }}><div style={{ width: 25, height: 25, borderRadius: "50%", background: "rgba(80,227,194,0.14)", color: "#50e3c2", display: "grid", placeItems: "center", fontSize: 10, fontWeight: 700, flexShrink: 0 }}>{person.name.split(" ").map((part) => part[0]).slice(0, 2).join("")}</div><div style={{ minWidth: 0 }}><div style={{ color: "rgba(255,255,255,0.82)", fontSize: 12, fontWeight: 600 }}>{person.name}<EvidenceLinks items={person.evidence} /></div><div style={{ color: "rgba(255,255,255,0.45)", fontSize: 11, marginTop: 2 }}>{person.title}</div></div></div>)}</div> : <SourceLimitation status={statuses.people} />}</ModuleCard>}
-        {visible("hiring", Boolean(intel.hiring?.totalOpenRoles)) && <ModuleCard module="hiring" status={statuses.hiring}>{intel.hiring?.totalOpenRoles ? <><div style={{ fontSize: 30, lineHeight: 1, color: "#fff", fontWeight: 750 }}>{intel.hiring.totalOpenRoles}</div><div style={{ color: "rgba(255,255,255,0.42)", fontSize: 11, marginTop: 5, marginBottom: 13 }}>publicly listed open roles</div><div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{intel.hiring.byDepartment.slice(0, 6).map((item) => <span key={item.name} style={{ background: "rgba(255,255,255,0.06)", color: "rgba(255,255,255,0.62)", borderRadius: 99, fontSize: 10, padding: "4px 8px" }}>{item.name} · {item.count}</span>)}</div>{intel.hiring.roles.some((role) => role.leadership) && <div style={{ color: "#f3b562", marginTop: 12, fontSize: 11 }}>Leadership hiring: {intel.hiring.roles.filter((role) => role.leadership).slice(0, 3).map((role) => role.title).join(", ")}</div>}</> : <SourceLimitation status={statuses.hiring} />}</ModuleCard>}
-        {visible("compliance", Boolean(complianceClaims.length)) && <ModuleCard module="compliance" status={statuses.compliance}>{complianceClaims.length ? <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>{displayedCompliance.map((claim) => <div key={`${claim.framework}-${claim.claim}`}><div style={{ color: "#e6b7ff", fontSize: 11, fontWeight: 700 }}>{claim.framework}<EvidenceLinks items={claim.evidence} /></div><div style={{ color: "rgba(255,255,255,0.5)", fontSize: 11, lineHeight: 1.5, marginTop: 3 }}>{claim.claim}</div></div>)}{complianceClaims.length > 6 && <button onClick={() => setShowAllCompliance((current) => !current)} style={{ alignSelf: "flex-start", padding: 0, color: "#e6b7ff", background: "none", border: 0, cursor: "pointer", fontSize: 11, fontWeight: 700 }}>{showAllCompliance ? "Show fewer" : `Show all ${complianceClaims.length}`}</button>}</div> : <SourceLimitation status={statuses.compliance} />}</ModuleCard>}
+        {visible("people", Boolean(intel.people?.length)) && <ModuleCard module="people" status={statuses.people}><div style={{ display: "flex", flexDirection: "column", gap: 10 }}>{intel.people?.slice(0, 8).map((person) => <div key={`${person.name}-${person.title}`} style={{ display: "flex", gap: 9, alignItems: "flex-start" }}><div style={{ width: 25, height: 25, borderRadius: "50%", background: "rgba(80,227,194,0.14)", color: "#50e3c2", display: "grid", placeItems: "center", fontSize: 10, fontWeight: 700, flexShrink: 0 }}>{person.name.split(" ").map((part) => part[0]).slice(0, 2).join("")}</div><div style={{ minWidth: 0 }}><div style={{ color: "rgba(255,255,255,0.82)", fontSize: 12, fontWeight: 600 }}>{person.name}<EvidenceLinks items={person.evidence} /></div><div style={{ color: "rgba(255,255,255,0.45)", fontSize: 11, marginTop: 2 }}>{person.title}</div></div></div>)}</div></ModuleCard>}
+        {visible("hiring", Boolean(intel.hiring?.totalOpenRoles)) && <ModuleCard module="hiring" status={statuses.hiring}><div style={{ fontSize: 30, lineHeight: 1, color: "#fff", fontWeight: 750 }}>{intel.hiring?.totalOpenRoles}</div><div style={{ color: "rgba(255,255,255,0.42)", fontSize: 11, marginTop: 5, marginBottom: 13 }}>publicly listed open roles</div><div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{intel.hiring?.byDepartment.slice(0, 6).map((item) => <span key={item.name} style={{ background: "rgba(255,255,255,0.06)", color: "rgba(255,255,255,0.62)", borderRadius: 99, fontSize: 10, padding: "4px 8px" }}>{item.name} · {item.count}</span>)}</div>{intel.hiring?.roles.some((role) => role.leadership) && <div style={{ color: "#f3b562", marginTop: 12, fontSize: 11 }}>Leadership hiring: {intel.hiring.roles.filter((role) => role.leadership).slice(0, 3).map((role) => role.title).join(", ")}</div>}</ModuleCard>}
+        {visible("compliance", Boolean(complianceClaims.length)) && <ModuleCard module="compliance" status={statuses.compliance}><div style={{ display: "flex", flexDirection: "column", gap: 9 }}>{displayedCompliance.map((claim) => <div key={`${claim.framework}-${claim.claim}`}><div style={{ color: "#e6b7ff", fontSize: 11, fontWeight: 700 }}>{claim.framework}<EvidenceLinks items={claim.evidence} /></div><div style={{ color: "rgba(255,255,255,0.5)", fontSize: 11, lineHeight: 1.5, marginTop: 3 }}>{claim.claim}</div></div>)}{complianceClaims.length > 6 && <button onClick={() => setShowAllCompliance((current) => !current)} style={{ alignSelf: "flex-start", padding: 0, color: "#e6b7ff", background: "none", border: 0, cursor: "pointer", fontSize: 11, fontWeight: 700 }}>{showAllCompliance ? "Show fewer" : `Show all ${complianceClaims.length}`}</button>}</div></ModuleCard>}
       </div>}
 
       <CoverageStrip statuses={statuses} />

@@ -126,7 +126,25 @@ export interface IntegrationSignal {
   evidence: EvidenceReference[];
 }
 
+export interface ProductLineSignal {
+  name: string;
+  summary?: string;
+  url?: string;
+  evidence: EvidenceReference[];
+}
+
+export interface BuyerSegmentSignal {
+  name: string;
+  summary?: string;
+  url?: string;
+  evidence: EvidenceReference[];
+}
+
 export interface ProductPricingSignal {
+  /** Named products or solution lines published in the company's own navigation or page content. */
+  productLines: ProductLineSignal[];
+  /** Named buyer or customer segments published in the company's own navigation or page content. */
+  buyerSegments: BuyerSegmentSignal[];
   productClaims: string[];
   targetCustomerClaims: string[];
   primaryCta?: string;

@@ -358,6 +358,7 @@ export async function POST(req: NextRequest) {
           const blockedUrls: Record<string, string> = {};
           const competitors = await mapWithConcurrency(competitorUrls, 2, async (url) => {
             try {
+              emit({ type: "profile_started", url: normalizeUrl(url) });
               const resolved = await getCompetitorProfile(url, forceRefresh, userId, email);
               emit({ type: resolved.cacheHit ? "profile_cached" : "profile_completed", url: normalizeUrl(url), generationId: resolved.generationId });
               return resolved;

@@ -2,6 +2,7 @@ import * as crypto from "crypto";
 import * as cheerio from "cheerio";
 import { sourceHash, textExcerpt } from "./sourceManifest";
 import type {
+  BuyerSegmentSignal,
   ComplianceClaim,
   CompanyIntelligence,
   EvidenceDraft,
@@ -12,6 +13,7 @@ import type {
   ModuleStatus,
   NewsSignal,
   PersonSignal,
+  ProductLineSignal,
   ProductPricingSignal,
   SourceManifest,
   SourcePage,
@@ -252,6 +254,7 @@ export function extractNews(manifest: SourceManifest): ModuleResult<NewsSignal[]
 }
 
 interface NormalizedJob {
+  sourceKey?: string;
   title: string;
   department?: string;
   location?: string;
@@ -342,6 +345,30 @@ async function atsJobs(page: SourcePage): Promise<NormalizedJob[]> {
       excerpt: String(job.descriptionPlain || job.text || ""), source: page,
     })).filter((job) => job.title);
   }
+  if (/(^|\.)apply\.workable\.com$/i.test(parsed.hostname) && pathParts[0]) {
+    // Workable's hosted board is a client-rendered shell, but its public widget
+    // feed returns the published roles without an employer credential. This is
+    // read only after the company has linked to its Workable board.
+    const payload = await fetchJson(`https://www.workable.com/api/accounts/${encodeURIComponent(pathParts[0])}?details=true`) as { jobs?: Array<Record<string, unknown>> } | null;
+    return (payload?.jobs || [])
+      .filter((job) => Boolean(job.title) && (Boolean(job.published_on) || !job.state || String(job.state).toLowerCase() === "published"))
+      .map((job) => {
+        const location = job.location as { location_str?: string; city?: string; state?: string; country?: string } | undefined;
+        const locations = Array.isArray(job.locations) ? job.locations as Array<{ city?: string; region?: string; country?: string }> : [];
+        const locationLabel = location?.location_str
+          || [location?.city, location?.state, location?.country].filter(Boolean).join(", ")
+          || locations.map((item) => [item.city, item.region, item.country].filter(Boolean).join(", ")).filter(Boolean).join(" / ");
+        return {
+          sourceKey: String(job.shortcode || job.id || job.url || job.title),
+          title: String(job.title || ""),
+          department: String(job.department || job.function || "") || undefined,
+          location: locationLabel || undefined,
+          url: String(job.url || job.shortlink || job.application_url || "") || undefined,
+          excerpt: String(job.description || job.full_description || job.title || ""),
+          source: page,
+        };
+      });
+  }
   return [];
 }
 
@@ -349,7 +376,11 @@ export async function extractHiring(manifest: SourceManifest): Promise<ModuleRes
   const startedAt = Date.now();
   const jobs: NormalizedJob[] = [];
   const seen = new Set<string>();
-  for (const page of relevantPages(manifest, "hiring")) {
+  // Hosted ATS boards can serve an empty JavaScript shell while exposing their
+  // published roles through a documented public feed. Keep those ATS pages so
+  // their adapter can run; ordinary empty first-party pages remain excluded.
+  const hiringPages = attemptedPages(manifest, "hiring").filter((page) => !page.blocked && !page.softNotFound && (Boolean(page.text) || page.sourceKind === "ats"));
+  for (const page of hiringPages) {
     jobs.push(...staticJobs(page));
     for (const item of parseJsonLd(page) as Array<Record<string, unknown>>) {
       if (!String(item?.["@type"] || "").toLowerCase().includes("jobposting")) continue;
@@ -362,7 +393,7 @@ export async function extractHiring(manifest: SourceManifest): Promise<ModuleRes
   const roles: HiringSignals["roles"] = [];
   const evidenceDrafts: EvidenceDraft[] = [];
   for (const job of jobs) {
-    const key = `${job.title}|${job.location || ""}|${job.department || ""}`.toLowerCase();
+    const key = (job.sourceKey || `${job.title}|${job.location || ""}|${job.department || ""}`).toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
     const ref = evidence("hiring", "job", key, "hiring.roles", job.source, `${job.title}${job.department ? ` — ${job.department}` : ""}${job.location ? ` — ${job.location}` : ""}. ${textExcerpt(job.excerpt, 180)}`);
@@ -509,6 +540,34 @@ export function extractIntegrations(manifest: SourceManifest): ModuleResult<Inte
 
 type ProductTextCandidate = { text: string; page: SourcePage };
 
+const PRODUCT_ROUTE_PATTERN = /\/(?:products?|platform|solutions?|services?|cameras?)(?:[-/]|$)/i;
+const BUYER_ROUTE_PATTERN = /\/(?:industr(?:y|ies)|customers?|who-we-serve|use-cases?|general-contractors?|owners?(?:-developers?)?|developers?|teams?)(?:[-/]|$)/i;
+const PRODUCT_LINE_LABEL = /^(?:platform|cameras?|software|hardware|analytics|monitoring)$/i;
+const GENERIC_ROUTE_LABEL = /^(?:learn more|read more|view all|explore|solutions?|products?|services?|who we serve|customers?)$/i;
+
+function routeLabel($: cheerio.CheerioAPI, element: Parameters<cheerio.CheerioAPI>[0]): { name: string; summary?: string } | null {
+  const heading = $(element).find("h1,h2,h3,h4").first().text().replace(/\s+/g, " ").trim();
+  const raw = $(element).text().replace(/\s+/g, " ").trim();
+  const name = (heading || raw.split(/(?:learn more|read more|view details)/i)[0] || "").trim();
+  if (!name || name.length > 90 || GENERIC_ROUTE_LABEL.test(name)) return null;
+  const remainder = raw.replace(name, "").replace(/(?:learn more|read more|view details)/ig, "").replace(/\s+/g, " ").trim();
+  return { name, summary: remainder.length >= 28 ? textExcerpt(remainder, 220) : undefined };
+}
+
+function addNamedRoute<T extends ProductLineSignal | BuyerSegmentSignal>(
+  target: Map<string, T>,
+  value: T,
+): void {
+  const key = value.name.toLowerCase().replace(/\s+/g, " ").trim();
+  const existing = target.get(key);
+  if (!existing) {
+    target.set(key, value);
+    return;
+  }
+  if (!existing.summary && value.summary) existing.summary = value.summary;
+  existing.evidence.push(...value.evidence.filter((reference) => !existing.evidence.some((current) => current.id === reference.id)));
+}
+
 const CLAIM_STOP_WORDS = new Set(["a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "into", "is", "it", "of", "on", "or", "our", "the", "that", "to", "with", "you", "your"]);
 
 function claimTokens(value: string): Set<string> {
@@ -568,6 +627,8 @@ export function extractProductPricing(manifest: SourceManifest): ModuleResult<Pr
   const productCandidates: ProductTextCandidate[] = [];
   const pricingCandidates: ProductTextCandidate[] = [];
   const targetCustomers: string[] = [];
+  const productLines = new Map<string, ProductLineSignal>();
+  const buyerSegments = new Map<string, BuyerSegmentSignal>();
   const evidenceDrafts: EvidenceDraft[] = [];
   const evidenceReferences: EvidenceReference[] = [];
   const claimEvidence: Record<string, EvidenceReference[]> = {};
@@ -577,6 +638,25 @@ export function extractProductPricing(manifest: SourceManifest): ModuleResult<Pr
   let pricingStatement: string | undefined;
   for (const page of pages) {
     const $ = cheerio.load(page.contentHtml || page.html);
+    $("a[href]").each((_, element) => {
+      const href = $(element).attr("href");
+      if (!href) return;
+      let url: string;
+      try { url = new URL(href, page.url).toString(); } catch { return; }
+      const route = routeLabel($, element);
+      if (route && (PRODUCT_ROUTE_PATTERN.test(new URL(url).pathname) || PRODUCT_LINE_LABEL.test(route.name))) {
+        const record = evidence("productPricing", "product_line", sourceHash(`${route.name}|${url}`).slice(0, 16), "productPricing.productLines", page, route.summary ? `${route.name} — ${route.summary}` : route.name);
+        evidenceDrafts.push(record.draft);
+        evidenceReferences.push(record.reference);
+        addNamedRoute(productLines, { ...route, url, evidence: [record.reference] });
+      }
+      if (route && BUYER_ROUTE_PATTERN.test(new URL(url).pathname)) {
+        const record = evidence("productPricing", "buyer_segment", sourceHash(`${route.name}|${url}`).slice(0, 16), "productPricing.buyerSegments", page, route.summary ? `${route.name} — ${route.summary}` : route.name);
+        evidenceDrafts.push(record.draft);
+        evidenceReferences.push(record.reference);
+        addNamedRoute(buyerSegments, { ...route, url, evidence: [record.reference] });
+      }
+    });
     $("h1,h2,h3,p,li").each((_, element) => {
       const text = $(element).text().replace(/\s+/g, " ").trim();
       if (text.length < 20 || text.length > 360) return;
@@ -619,8 +699,19 @@ export function extractProductPricing(manifest: SourceManifest): ModuleResult<Pr
     claimEvidence[claim] = [...(claimEvidence[claim] || []), record.reference];
   }
 
-  const value: ProductPricingSignal = { productClaims, targetCustomerClaims: targetCustomers, primaryCta, pricingStatement, claimEvidence, targetCustomerEvidence, pricingEvidence, evidence: evidenceReferences };
-  return { value, evidence: evidenceDrafts, status: statusFor("productPricing", manifest, startedAt, Boolean(value.productClaims.length || value.pricingStatement), "Product details not published.") };
+  const value: ProductPricingSignal = {
+    productLines: [...productLines.values()].slice(0, 6),
+    buyerSegments: [...buyerSegments.values()].slice(0, 6),
+    productClaims,
+    targetCustomerClaims: targetCustomers,
+    primaryCta,
+    pricingStatement,
+    claimEvidence,
+    targetCustomerEvidence,
+    pricingEvidence,
+    evidence: evidenceReferences,
+  };
+  return { value, evidence: evidenceDrafts, status: statusFor("productPricing", manifest, startedAt, Boolean(value.productLines.length || value.buyerSegments.length || value.productClaims.length || value.pricingStatement), "Product details not published.") };
 }
 
 export async function runSourceModules(manifest: SourceManifest): Promise<{ intelligence: CompanyIntelligence; evidence: EvidenceDraft[] }> {

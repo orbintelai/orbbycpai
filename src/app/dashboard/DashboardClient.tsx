@@ -91,6 +91,9 @@ interface ComparisonResult {
 
 type ComparisonStreamEvent = {
   type: "primary_started" | "profile_cached" | "profile_started" | "profile_completed" | "profile_restricted" | "factual_complete" | "error";
+  url?: string;
+  reason?: string;
+  generationId?: string;
   comparisonId?: string;
   primaryGenerationId?: string;
   primary?: BrandProfile;
@@ -540,6 +543,7 @@ function AiPerceptionTab({ perception, onRerun }: { perception?: AiPerception; o
 function ComparisonTab({ primaryUrl, primaryGenerationId }: { primaryUrl: string; primaryGenerationId: string }) {
   const [competitorUrls, setCompetitorUrls] = useState<string[]>(["", "", ""]);
   const [isLoading, setIsLoading] = useState(false);
+  const [comparisonProgress, setComparisonProgress] = useState("");
   const [isRestoring, setIsRestoring] = useState(true);
   const [result, setResult] = useState<ComparisonResult | null>(null);
   const [error, setError] = useState("");
@@ -551,6 +555,7 @@ function ComparisonTab({ primaryUrl, primaryGenerationId }: { primaryUrl: string
     let cancelled = false;
     setResult(null);
     setError("");
+    setComparisonProgress("");
     setIsRestoring(true);
     setCompetitorUrls(["", "", ""]);
     if (!primaryUrl) { setIsRestoring(false); return () => { cancelled = true; }; }
@@ -608,7 +613,7 @@ function ComparisonTab({ primaryUrl, primaryGenerationId }: { primaryUrl: string
     if (validUrls.length === 0) return;
     // Preserve the last successful result until its replacement is fully saved.
     // A failed replacement must never erase completed research.
-    setIsLoading(true); setError("");
+    setIsLoading(true); setError(""); setComparisonProgress("Preparing a fresh company profile…");
     try {
       const res = await fetch("/api/compare", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ primaryUrl, competitorUrls: validUrls }) });
       if (!res.ok || !res.body) { const data = await res.json(); throw new Error(data.error || "Comparison failed"); }
@@ -622,10 +627,16 @@ function ComparisonTab({ primaryUrl, primaryGenerationId }: { primaryUrl: string
           if (!dataLine) continue;
           const event = JSON.parse(dataLine.slice(6)) as ComparisonStreamEvent;
           if (event.type === "error") throw new Error(event.error || "Comparison failed");
+          const domain = event.url ? extractDomain(event.url) : "competitor";
+          if (event.type === "primary_started") setComparisonProgress("Analyzing the primary company…");
+          if (event.type === "profile_started") setComparisonProgress(`Checking ${domain} for a current company profile…`);
+          if (event.type === "profile_cached") setComparisonProgress(`Using a current saved profile for ${domain}.`);
+          if (event.type === "profile_completed") setComparisonProgress(`Finished factual research for ${domain}.`);
+          if (event.type === "profile_restricted") setComparisonProgress(`${domain} restricts automated access; continuing with available competitors.`);
           if (event.type === "factual_complete" && event.primary && event.competitors && event.comparisonId) {
             const ids = event.competitorGenerationIds || [];
             const next: ComparisonResult = { comparisonId: event.comparisonId, primaryGenerationId: event.primaryGenerationId, primary: event.primary, competitors: event.competitors, competitorGenerationIds: ids, competitivePositions: {}, strategistStatuses: Object.fromEntries(event.competitors.map((p) => [new URL(p.meta?.url || "https://unknown").hostname.replace(/^www\./, ""), "idle"])) as Record<string, StrategistStatus>, blockedUrls: event.blockedUrls || {}, competitorUrls: validUrls };
-            setResult(next); setIsLoading(false);
+            setResult(next); setIsLoading(false); setComparisonProgress("Factual comparison ready. Loading strategist guidance…");
           }
         }
       }
@@ -697,6 +708,7 @@ function ComparisonTab({ primaryUrl, primaryGenerationId }: { primaryUrl: string
           {isRestoring ? "Loading saved comparison..." : isLoading ? "Analyzing competitors..." : "Run comparison →"}
         </button>
         {isRestoring && <div style={{ marginTop: 9, fontSize: 11, color: "rgba(255,255,255,0.36)" }}>Restoring the latest saved comparison…</div>}
+        {isLoading && comparisonProgress && <div style={{ marginTop: 9, fontSize: 11, color: "rgba(80,227,194,0.72)" }}>{comparisonProgress}</div>}
         {error && (
           <div style={{ marginTop: 10, fontSize: 12, color: "rgba(255,100,100,0.8)" }}>{error}</div>
         )}

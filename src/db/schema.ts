@@ -267,6 +267,10 @@ export const competitorComparisons = pgTable(
     primaryProfile: jsonb("primary_profile").notNull(),
     competitorProfiles: jsonb("competitor_profiles").notNull(), // BrandProfile[]
     uspStatements: jsonb("usp_statements").notNull(), // { [domain]: CompetitivePosition }
+    // Exact submitted inputs and access restrictions are persisted so the
+    // latest completed comparison can be restored after navigation or reload.
+    submittedCompetitorUrls: jsonb("submitted_competitor_urls"), // string[]
+    blockedUrls: jsonb("blocked_urls"), // { [domain]: submittedUrl }
     // New comparisons record immutable generation membership. Legacy rows remain readable.
     primaryGenerationId: uuid("primary_generation_id").references(() => generations.id, { onDelete: "set null" }),
     competitorGenerationIds: jsonb("competitor_generation_ids"), // string[], aligned to competitorProfiles
@@ -277,6 +281,7 @@ export const competitorComparisons = pgTable(
     primaryIdx: index("competitor_comparisons_primary_idx").on(table.primaryBrandDomain),
     createdIdx: index("competitor_comparisons_created_at_idx").on(table.createdAt),
     primaryGenerationIdx: index("competitor_comparisons_primary_generation_idx").on(table.primaryGenerationId),
+    userPrimaryCreatedIdx: index("competitor_comparisons_user_primary_created_idx").on(table.userId, table.primaryBrandDomain, table.createdAt),
   })
 );
 

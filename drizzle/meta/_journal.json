@@ -36,6 +36,13 @@
       "when": 1788123928490,
       "tag": "0004_comparison_streaming",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1790188740000,
+      "tag": "0005_durable_comparison_runs",
+      "breakpoints": true
     }
   ]
 }

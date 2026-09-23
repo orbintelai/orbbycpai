@@ -374,8 +374,12 @@ export async function POST(req: NextRequest) {
           const accessible = competitors.filter((item): item is ProfileResolution => item !== null);
           const comparisonInserted = await db.insert(competitorComparisons).values({
             userId,
-            primaryBrandDomain: normalizeDomain(primary.profile.meta?.url || primaryUrl),
+            // Use the submitted primary identity so the saved comparison restores
+            // when the user returns to this report, even if the company redirects.
+            primaryBrandDomain: normalizeDomain(primaryUrl),
             competitorDomains: accessible.map((item) => normalizeDomain(item.profile.meta?.url || "")),
+            submittedCompetitorUrls: competitorUrls.map(normalizeUrl),
+            blockedUrls,
             primaryProfile: primary.profile as unknown as Record<string, unknown>,
             competitorProfiles: accessible.map((item) => item.profile) as unknown as Record<string, unknown>,
             uspStatements: {},

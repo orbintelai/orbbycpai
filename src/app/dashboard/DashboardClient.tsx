@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useRef } from "react";
+import React, { useCallback, useEffect, useState, useRef } from "react";
 import { signOut } from "next-auth/react";
 import Image from "next/image";
 import { CompanyIntelligencePanel, WhatChangedPanel } from "./CompanyIntelligencePanel";
@@ -85,6 +85,8 @@ interface ComparisonResult {
   competitivePositions: Record<string, CompetitivePosition>;
   strategistStatuses?: Record<string, StrategistStatus>;
   blockedUrls: Record<string, string>; // { [domain]: inputUrl }
+  competitorUrls?: string[];
+  createdAt?: string;
 }
 
 type ComparisonStreamEvent = {
@@ -194,9 +196,9 @@ function Card({ children, style }: { children: React.ReactNode; style?: React.CS
   );
 }
 
-// ─── Brand Report Tab ─────────────────────────────────────────────────────────
+// ─── Company Intelligence Tab ─────────────────────────────────────────────────
 
-function BrandReportTab({ profile, generationId }: { profile: BrandProfile; generationId: string }) {
+function CompanyIntelligenceTab({ profile, generationId }: { profile: BrandProfile; generationId: string }) {
   const pi = profile.productIntelligence;
   const archetype = profile.brandArchetype;
   const meta = profile.companyMetadata;
@@ -206,12 +208,19 @@ function BrandReportTab({ profile, generationId }: { profile: BrandProfile; gene
       {/* One-liner */}
       {pi?.oneLiner && (
         <Card>
-          <SectionLabel>Positioning Signal</SectionLabel>
+          <SectionLabel>Company Summary</SectionLabel>
           <p style={{ fontSize: 15, color: "rgba(255,255,255,0.8)", lineHeight: 1.6, margin: 0 }}>
             {profile.positioningSignal || pi.oneLiner}
           </p>
         </Card>
       )}
+
+      {/* First-party evidence is the primary account-research surface. */}
+      <CompanyIntelligencePanel profile={profile} generationId={generationId} />
+
+      <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", paddingTop: 18, marginTop: 2 }}>
+        <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 10, fontWeight: 700, letterSpacing: "0.11em", textTransform: "uppercase", marginBottom: 5 }}>Brand & Design Context</div>
+        <p style={{ color: "rgba(255,255,255,0.38)", fontSize: 12, lineHeight: 1.5, margin: "0 0 16px" }}>Supporting visual, tonal, and classified context retained from earlier reports. Source-backed company research appears above.</p>
 
       {/* Colors + Typography row */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
@@ -300,7 +309,7 @@ function BrandReportTab({ profile, generationId }: { profile: BrandProfile; gene
 
         {/* Archetype */}
         <Card>
-          <SectionLabel>Brand Archetype</SectionLabel>
+          <SectionLabel>Brand Framing</SectionLabel>
           {archetype ? (
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
@@ -320,7 +329,7 @@ function BrandReportTab({ profile, generationId }: { profile: BrandProfile; gene
       {/* Product Intelligence */}
       {pi && (
         <Card>
-          <SectionLabel>Product Intelligence</SectionLabel>
+          <SectionLabel>Classified Product Context</SectionLabel>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 16 }}>
             {pi.targetCustomers && (
               <div>
@@ -356,7 +365,7 @@ function BrandReportTab({ profile, generationId }: { profile: BrandProfile; gene
       {/* Company Metadata */}
       {meta && (meta.foundedYear || meta.employeeCount || meta.hqLocation || meta.fundingStage) && (
         <Card>
-          <SectionLabel>Company</SectionLabel>
+          <SectionLabel>Classified Company Context</SectionLabel>
           <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
             {meta.foundedYear && (
               <div>
@@ -400,7 +409,7 @@ function BrandReportTab({ profile, generationId }: { profile: BrandProfile; gene
           </div>
         </Card>
       )}
-      <CompanyIntelligencePanel profile={profile} generationId={generationId} />
+      </div>
     </div>
   );
 }
@@ -429,7 +438,7 @@ function AiPerceptionTab({ perception, onRerun }: { perception?: AiPerception; o
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ fontSize: 13, color: "rgba(255,255,255,0.4)", lineHeight: 1.6, marginBottom: 4 }}>
-        How three leading AI models perceive this brand based on their training data — a proxy for public brand equity and awareness.
+        How three leading AI models describe and categorize this company based on their training data. This is model analysis, not first-party fact.
       </div>
       {models.map(({ key, label, icon, color }) => {
         const entry = perception[key];
@@ -528,65 +537,78 @@ function AiPerceptionTab({ perception, onRerun }: { perception?: AiPerception; o
 
 // ─── Competitor Comparison Tab ────────────────────────────────────────────────
 
-function ComparisonTab({ primaryProfile }: { primaryProfile: BrandProfile }) {
-  const primaryUrl = primaryProfile.meta?.url || "";
-  const storageKey = `orb_comparison_${primaryUrl}`;
-
-  // Hydrate from localStorage on mount so results survive tab switches
-  const [competitorUrls, setCompetitorUrls] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem(storageKey);
-      if (saved) {
-        const parsed = JSON.parse(saved) as { competitorUrls?: string[] };
-        if (Array.isArray(parsed.competitorUrls)) {
-          const padded = [...parsed.competitorUrls];
-          while (padded.length < 3) padded.push("");
-          return padded.slice(0, 3);
-        }
-      }
-    } catch {}
-    return ["", "", ""];
-  });
+function ComparisonTab({ primaryUrl, primaryGenerationId }: { primaryUrl: string; primaryGenerationId: string }) {
+  const [competitorUrls, setCompetitorUrls] = useState<string[]>(["", "", ""]);
   const [isLoading, setIsLoading] = useState(false);
-  const [result, setResult] = useState<ComparisonResult | null>(() => {
-    try {
-      const saved = localStorage.getItem(storageKey);
-      if (saved) {
-        const parsed = JSON.parse(saved) as { result?: ComparisonResult };
-        return parsed.result ?? null;
-      }
-    } catch {}
-    return null;
-  });
+  const [isRestoring, setIsRestoring] = useState(true);
+  const [result, setResult] = useState<ComparisonResult | null>(null);
   const [error, setError] = useState("");
 
-  const persistComparison = (next: ComparisonResult, urls: string[]) => {
-    try { localStorage.setItem(storageKey, JSON.stringify({ competitorUrls: urls, result: next })); } catch {}
-  };
+  // A comparison is durable database state, not browser-only state. Restoring
+  // the latest completed comparison by primary report makes navigation and
+  // browser refresh safe while keeping earlier completed runs as history.
+  useEffect(() => {
+    let cancelled = false;
+    setResult(null);
+    setError("");
+    setIsRestoring(true);
+    setCompetitorUrls(["", "", ""]);
+    if (!primaryUrl) { setIsRestoring(false); return () => { cancelled = true; }; }
+    fetch(`/api/compare/latest?primaryUrl=${encodeURIComponent(primaryUrl)}&primaryGenerationId=${encodeURIComponent(primaryGenerationId)}`, { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Saved comparison is unavailable.");
+        return response.json() as Promise<{ comparison: ComparisonResult | null }>;
+      })
+      .then((payload) => {
+        if (cancelled || !payload.comparison) return;
+        const urls = payload.comparison.competitorUrls || [];
+        const padded = [...urls];
+        while (padded.length < 3) padded.push("");
+        setCompetitorUrls(padded.slice(0, 3));
+        setResult(payload.comparison);
+      })
+      .catch((err: Error) => { if (!cancelled) setError(err.message); })
+      .finally(() => { if (!cancelled) setIsRestoring(false); });
+    return () => { cancelled = true; };
+  }, [primaryUrl, primaryGenerationId]);
 
-  const loadStrategist = async (comparison: ComparisonResult, competitorGenerationId: string, domain: string, urls: string[]) => {
+  const loadStrategist = useCallback(async (comparison: ComparisonResult, competitorGenerationId: string, domain: string) => {
     if (!comparison.comparisonId) return;
     setResult((current) => current ? { ...current, strategistStatuses: { ...current.strategistStatuses, [domain]: "loading" } } : current);
     try {
       const res = await fetch("/api/compare/strategist", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ comparisonId: comparison.comparisonId, competitorGenerationId }) });
       const data = await res.json();
-      if (res.status === 202) { window.setTimeout(() => void loadStrategist(comparison, competitorGenerationId, domain, urls), 1500); return; }
+      if (res.status === 202) { window.setTimeout(() => void loadStrategist(comparison, competitorGenerationId, domain), 1500); return; }
       if (!res.ok) throw new Error(data.error || "Strategist analysis unavailable.");
       setResult((current) => {
         if (!current) return current;
-        const next = { ...current, competitivePositions: { ...current.competitivePositions, [domain]: data.result }, strategistStatuses: { ...current.strategistStatuses, [domain]: "complete" as StrategistStatus } };
-        persistComparison(next, urls);
-        return next;
+        return { ...current, competitivePositions: { ...current.competitivePositions, [domain]: data.result }, strategistStatuses: { ...current.strategistStatuses, [domain]: "complete" as StrategistStatus } };
       });
     } catch {
       setResult((current) => current ? { ...current, strategistStatuses: { ...current.strategistStatuses, [domain]: "failed" } } : current);
     }
-  };
+  }, []);
+
+  // Strategist output is persisted independently. If the browser leaves after
+  // factual completion but before an idle member is requested, resume only that
+  // missing member on restoration. Completed and failed results are never rerun.
+  useEffect(() => {
+    if (isRestoring || !result?.comparisonId) return;
+    result.competitors.forEach((competitor, index) => {
+      const domain = extractDomain(competitor.meta?.url || "");
+      const id = result.competitorGenerationIds?.[index];
+      if (id && result.strategistStatuses?.[domain] === "idle") {
+        void loadStrategist(result, id, domain);
+      }
+    });
+  }, [isRestoring, loadStrategist, result]);
 
   const handleRunComparison = async () => {
     const validUrls = competitorUrls.filter(u => u.trim());
     if (validUrls.length === 0) return;
-    setIsLoading(true); setError(""); setResult(null);
+    // Preserve the last successful result until its replacement is fully saved.
+    // A failed replacement must never erase completed research.
+    setIsLoading(true); setError("");
     try {
       const res = await fetch("/api/compare", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ primaryUrl, competitorUrls: validUrls }) });
       if (!res.ok || !res.body) { const data = await res.json(); throw new Error(data.error || "Comparison failed"); }
@@ -602,9 +624,8 @@ function ComparisonTab({ primaryProfile }: { primaryProfile: BrandProfile }) {
           if (event.type === "error") throw new Error(event.error || "Comparison failed");
           if (event.type === "factual_complete" && event.primary && event.competitors && event.comparisonId) {
             const ids = event.competitorGenerationIds || [];
-            const next: ComparisonResult = { comparisonId: event.comparisonId, primaryGenerationId: event.primaryGenerationId, primary: event.primary, competitors: event.competitors, competitorGenerationIds: ids, competitivePositions: {}, strategistStatuses: Object.fromEntries(event.competitors.map((p) => [new URL(p.meta?.url || "https://unknown").hostname.replace(/^www\\./, ""), "idle"])) as Record<string, StrategistStatus>, blockedUrls: event.blockedUrls || {} };
-            setResult(next); persistComparison(next, validUrls); setIsLoading(false);
-            event.competitors.forEach((competitor, index) => { const domain = new URL(competitor.meta?.url || "https://unknown").hostname.replace(/^www\\./, ""); const id = ids[index]; if (id) void loadStrategist(next, id, domain, validUrls); });
+            const next: ComparisonResult = { comparisonId: event.comparisonId, primaryGenerationId: event.primaryGenerationId, primary: event.primary, competitors: event.competitors, competitorGenerationIds: ids, competitivePositions: {}, strategistStatuses: Object.fromEntries(event.competitors.map((p) => [new URL(p.meta?.url || "https://unknown").hostname.replace(/^www\./, ""), "idle"])) as Record<string, StrategistStatus>, blockedUrls: event.blockedUrls || {}, competitorUrls: validUrls };
+            setResult(next); setIsLoading(false);
           }
         }
       }
@@ -663,18 +684,19 @@ function ComparisonTab({ primaryProfile }: { primaryProfile: BrandProfile }) {
         </div>
         <button
           onClick={handleRunComparison}
-          disabled={isLoading || !competitorUrls.some(u => u.trim())}
+          disabled={isRestoring || isLoading || !competitorUrls.some(u => u.trim())}
           style={{
-            background: isLoading ? "rgba(0,212,170,0.15)" : "#00d4aa",
-            color: isLoading ? "rgba(0,212,170,0.5)" : "#000",
+            background: isRestoring || isLoading ? "rgba(0,212,170,0.15)" : "#00d4aa",
+            color: isRestoring || isLoading ? "rgba(0,212,170,0.5)" : "#000",
             border: "none", borderRadius: 8, padding: "9px 20px",
             fontSize: 13, fontWeight: 600,
-            cursor: isLoading ? "not-allowed" : "pointer",
-            boxShadow: isLoading ? "none" : "0 0 16px rgba(0,212,170,0.3)",
+            cursor: isRestoring || isLoading ? "not-allowed" : "pointer",
+            boxShadow: isRestoring || isLoading ? "none" : "0 0 16px rgba(0,212,170,0.3)",
           }}
         >
-          {isLoading ? "Analyzing competitors..." : "Run comparison →"}
+          {isRestoring ? "Loading saved comparison..." : isLoading ? "Analyzing competitors..." : "Run comparison →"}
         </button>
+        {isRestoring && <div style={{ marginTop: 9, fontSize: 11, color: "rgba(255,255,255,0.36)" }}>Restoring the latest saved comparison…</div>}
         {error && (
           <div style={{ marginTop: 10, fontSize: 12, color: "rgba(255,100,100,0.8)" }}>{error}</div>
         )}
@@ -705,7 +727,7 @@ function ComparisonTab({ primaryProfile }: { primaryProfile: BrandProfile }) {
         <>
           {/* Side-by-side grid */}
           <Card>
-            <SectionLabel>Brand Comparison</SectionLabel>
+            <SectionLabel>Company Comparison</SectionLabel>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                 <thead>
@@ -1037,8 +1059,9 @@ export default function DashboardClient({ user, generations: initialGenerations,
     setSelectedId(generationId);
     setRunsUsed(prev => prev + 1);
     if (nextCapacity) setCapacity(nextCapacity);
-    // For full access runs, go to perception tab to show off the feature
-    setActiveTab(accessTier === "full" ? "perception" : "report");
+    // The source-backed account brief is the default destination; AI Perception
+    // remains a separate, clearly model-labelled analysis tab.
+    setActiveTab("report");
   };
 
   return (
@@ -1135,7 +1158,7 @@ export default function DashboardClient({ user, generations: initialGenerations,
           {!selectedProfile ? (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: 400, color: "rgba(255,255,255,0.25)", textAlign: "center" }}>
               <div style={{ fontSize: 32, marginBottom: 12 }}>⊕</div>
-              <div style={{ fontSize: 14 }}>Enter a brand URL to get started</div>
+              <div style={{ fontSize: 14 }}>Enter a company URL to get started</div>
             </div>
           ) : (
             <>
@@ -1188,15 +1211,15 @@ export default function DashboardClient({ user, generations: initialGenerations,
                       marginBottom: -1,
                     }}
                   >
-                    {tab === "report" ? "Brand Report" : tab === "perception" ? "AI Perception" : tab === "comparison" ? "Competitor Comparison" : "What Changed"}
+                    {tab === "report" ? "Company Intelligence" : tab === "perception" ? "AI Perception" : tab === "comparison" ? "Competitor Comparison" : "What Changed"}
                   </button>
                 ))}
               </div>
 
               {/* Tab content */}
-              {activeTab === "report" && <BrandReportTab profile={selectedProfile} generationId={selectedGen!.id} />}
+              {activeTab === "report" && <CompanyIntelligenceTab profile={selectedProfile} generationId={selectedGen!.id} />}
               {activeTab === "perception" && <AiPerceptionTab perception={selectedProfile?.aiPerception} onRerun={handleRerun} />}
-              {activeTab === "comparison" && <ComparisonTab primaryProfile={selectedProfile!} />}
+              {activeTab === "comparison" && <ComparisonTab primaryUrl={selectedGen!.brandUrl} primaryGenerationId={selectedGen!.id} />}
               {activeTab === "changes" && <WhatChangedPanel generationId={selectedGen!.id} />}
             </>
           )}

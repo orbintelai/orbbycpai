@@ -82,6 +82,8 @@ export function CompanyIntelligencePanel({ profile, generationId }: { profile: {
   const product = intel.productPricing;
   const complianceClaims = intel.compliance || [];
   const displayedCompliance = showAllCompliance ? complianceClaims : complianceClaims.slice(0, 6);
+  const productLines = (product?.productLines || []).filter((line) => !/^(pricing|projects|blog|resources|case studies)$/i.test(line.name)).slice(0, 4);
+  const productDetails = (product?.productClaims || []).filter((claim) => claim.length >= 65).slice(0, 2);
   // Source-state diagnostics remain available in the export and coverage strip.
   // The on-screen report only allocates space to actionable structured facts.
   const visible = (_module: IntelligenceModule, hasPublishedData: boolean) => hasPublishedData;
@@ -101,28 +103,29 @@ export function CompanyIntelligencePanel({ profile, generationId }: { profile: {
         <ModuleCard module="productPricing" status={statuses.productPricing}>
           <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr) minmax(190px, 0.75fr)", gap: 20, alignItems: "start" }}>
             <div>
-              <Subheading>What they sell</Subheading>
-              {product?.productLines?.length ? (
+              <Subheading>Products</Subheading>
+              {productLines.length ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  {product.productLines.slice(0, 4).map((line) => <div key={`${line.name}-${line.url || ""}`}><a href={line.url || line.evidence[0]?.sourceUrl || "#"} target="_blank" rel="noreferrer" style={{ color: "rgba(255,255,255,0.84)", fontSize: 12, fontWeight: 650, textDecoration: "none" }}>{line.name}</a><EvidenceLinks items={line.evidence} />{line.summary && <div style={{ color: "rgba(255,255,255,0.48)", fontSize: 11, lineHeight: 1.5, marginTop: 3 }}>{line.summary}</div>}</div>)}
+                  {productLines.map((line) => <div key={`${line.name}-${line.url || ""}`}><a href={line.url || "#"} target="_blank" rel="noreferrer" style={{ color: "rgba(255,255,255,0.84)", fontSize: 12, fontWeight: 650, textDecoration: "none" }}>{line.name}</a>{line.summary && <div style={{ color: "rgba(255,255,255,0.48)", fontSize: 11, lineHeight: 1.5, marginTop: 3 }}>{line.summary}</div>}</div>)}
                 </div>
               ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>{product?.productClaims.slice(0, 3).map((claim) => <div key={claim} style={{ color: "rgba(255,255,255,0.68)", fontSize: 12, lineHeight: 1.45 }}>• {claim}<EvidenceLinks items={product?.claimEvidence?.[claim]} /></div>)}</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>{product?.productClaims.slice(0, 3).map((claim) => <div key={claim} style={{ color: "rgba(255,255,255,0.68)", fontSize: 12, lineHeight: 1.45 }}>• {claim}</div>)}</div>
               )}
+              {productDetails.length > 0 && <div style={{ marginTop: 16 }}><Subheading>Key capabilities</Subheading><div style={{ display: "flex", flexDirection: "column", gap: 7 }}>{productDetails.map((detail) => <div key={detail} style={{ color: "rgba(255,255,255,0.58)", fontSize: 11, lineHeight: 1.5 }}>• {detail}</div>)}</div></div>}
             </div>
             <div>
               <Subheading>Who they serve</Subheading>
               {product?.buyerSegments?.length ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  {product.buyerSegments.slice(0, 4).map((segment) => <div key={`${segment.name}-${segment.url || ""}`}><a href={segment.url || segment.evidence[0]?.sourceUrl || "#"} target="_blank" rel="noreferrer" style={{ color: "rgba(255,255,255,0.84)", fontSize: 12, fontWeight: 650, textDecoration: "none" }}>{segment.name}</a><EvidenceLinks items={segment.evidence} />{segment.summary && <div style={{ color: "rgba(255,255,255,0.48)", fontSize: 11, lineHeight: 1.5, marginTop: 3 }}>{segment.summary}</div>}</div>)}
+                  {product.buyerSegments.slice(0, 4).map((segment) => <div key={`${segment.name}-${segment.url || ""}`}><a href={segment.url || "#"} target="_blank" rel="noreferrer" style={{ color: "rgba(255,255,255,0.84)", fontSize: 12, fontWeight: 650, textDecoration: "none" }}>{segment.name}</a>{segment.summary && <div style={{ color: "rgba(255,255,255,0.48)", fontSize: 11, lineHeight: 1.5, marginTop: 3 }}>{segment.summary}</div>}</div>)}
                 </div>
               ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>{product?.targetCustomerClaims.slice(0, 3).map((claim) => <div key={claim} style={{ color: "rgba(255,255,255,0.68)", fontSize: 12, lineHeight: 1.45 }}>• {claim}<EvidenceLinks items={product?.targetCustomerEvidence?.[claim]} /></div>)}</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>{product?.targetCustomerClaims.slice(0, 3).map((claim) => <div key={claim} style={{ color: "rgba(255,255,255,0.68)", fontSize: 12, lineHeight: 1.45 }}>• {claim}</div>)}</div>
               )}
             </div>
             <div>
-              <Subheading>Commercial motion</Subheading>
-              <div style={{ color: "rgba(255,255,255,0.68)", fontSize: 12, lineHeight: 1.5 }}>{product?.pricingStatement || "No public pricing statement found."}<EvidenceLinks items={product?.pricingEvidence} /></div>
+              <Subheading>Pricing & buying path</Subheading>
+              <div style={{ color: "rgba(255,255,255,0.68)", fontSize: 12, lineHeight: 1.5 }}>{product?.pricingStatement || "No public pricing published."}</div>
               {product?.primaryCta && <div style={{ color: "#50e3c2", fontSize: 11, marginTop: 10 }}>Primary CTA: {product.primaryCta}</div>}
             </div>
           </div>

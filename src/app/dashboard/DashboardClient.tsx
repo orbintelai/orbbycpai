@@ -1014,7 +1014,22 @@ export default function DashboardClient({ user, generations: initialGenerations,
   const [activeTab, setActiveTab] = useState<"report" | "perception" | "comparison" | "changes">("report");
   const [runsUsed, setRunsUsed] = useState(stats.generationsUsed);
   const [capacity, setCapacity] = useState(stats.capacity);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const isAdmin = ADMIN_EMAILS.includes((user.email ?? "").toLowerCase());
+
+  // The analysis history is sensitive presentation context, so this preference
+  // is deliberately browser-session-only rather than an account setting.
+  useEffect(() => {
+    setSidebarCollapsed(window.sessionStorage.getItem("orb.sidebarCollapsed") === "true");
+  }, []);
+
+  const toggleSidebar = () => {
+    setSidebarCollapsed((current) => {
+      const next = !current;
+      window.sessionStorage.setItem("orb.sidebarCollapsed", String(next));
+      return next;
+    });
+  };
 
   const selectedGen = generations.find(g => g.id === selectedId);
   const selectedProfile = selectedGen?.brandProfile as BrandProfile | undefined;
@@ -1106,9 +1121,18 @@ export default function DashboardClient({ user, generations: initialGenerations,
         </div>
       )}
       {/* Body */}
-      <div style={{ flex: 1, maxWidth: 1280, margin: "0 auto", width: "100%", padding: "24px", display: "grid", gridTemplateColumns: "260px 1fr", gap: 20 }}>
+      <div style={{ flex: 1, maxWidth: 1280, margin: "0 auto", width: "100%", padding: "24px", display: "grid", gridTemplateColumns: sidebarCollapsed ? "1fr" : "260px 1fr", gap: sidebarCollapsed ? 0 : 20, position: "relative", transition: "grid-template-columns 0.2s ease, gap 0.2s ease" }}>
         {/* Sidebar */}
-        <div>
+        {!sidebarCollapsed && <aside style={{ position: "relative" }}>
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar"
+            style={{ position: "absolute", zIndex: 2, top: 10, right: -12, width: 25, height: 34, borderRadius: 8, border: "1px solid rgba(255,255,255,0.12)", background: "#111", color: "rgba(255,255,255,0.64)", cursor: "pointer", fontSize: 19, lineHeight: 1, boxShadow: "0 4px 14px rgba(0,0,0,0.28)" }}
+          >
+            ‹
+          </button>
           <NewAnalysisPanel
             onComplete={handleNewAnalysis}
             runsUsed={runsUsed}
@@ -1163,7 +1187,17 @@ export default function DashboardClient({ user, generations: initialGenerations,
               );
             })}
           </div>
-        </div>
+        </aside>}
+
+        {sidebarCollapsed && <button
+          type="button"
+          onClick={toggleSidebar}
+          aria-label="Show sidebar"
+          title="Show sidebar"
+          style={{ position: "absolute", zIndex: 2, top: 34, left: 0, width: 30, height: 38, borderRadius: 8, border: "1px solid rgba(255,255,255,0.12)", background: "#111", color: "rgba(255,255,255,0.64)", cursor: "pointer", fontSize: 19, lineHeight: 1, boxShadow: "0 4px 14px rgba(0,0,0,0.28)" }}
+        >
+          ›
+        </button>}
 
         {/* Main content */}
         <div>

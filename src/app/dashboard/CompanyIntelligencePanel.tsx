@@ -85,7 +85,7 @@ export function CompanyIntelligencePanel({ profile, generationId }: { profile: {
   // Source-state diagnostics remain available in the export and coverage strip.
   // The on-screen report only allocates space to actionable structured facts.
   const visible = (_module: IntelligenceModule, hasPublishedData: boolean) => hasPublishedData;
-  const hasProductData = Boolean(product?.productLines.length || product?.buyerSegments.length || product?.productClaims.length || product?.pricingStatement);
+  const hasProductData = Boolean(product?.productLines?.length || product?.buyerSegments?.length || product?.productClaims.length || product?.pricingStatement);
 
   return (
     <section style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 16 }}>
@@ -102,7 +102,7 @@ export function CompanyIntelligencePanel({ profile, generationId }: { profile: {
           <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr) minmax(190px, 0.75fr)", gap: 20, alignItems: "start" }}>
             <div>
               <Subheading>What they sell</Subheading>
-              {product?.productLines.length ? (
+              {product?.productLines?.length ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   {product.productLines.slice(0, 4).map((line) => <div key={`${line.name}-${line.url || ""}`}><a href={line.url || line.evidence[0]?.sourceUrl || "#"} target="_blank" rel="noreferrer" style={{ color: "rgba(255,255,255,0.84)", fontSize: 12, fontWeight: 650, textDecoration: "none" }}>{line.name}</a><EvidenceLinks items={line.evidence} />{line.summary && <div style={{ color: "rgba(255,255,255,0.48)", fontSize: 11, lineHeight: 1.5, marginTop: 3 }}>{line.summary}</div>}</div>)}
                 </div>
@@ -112,7 +112,7 @@ export function CompanyIntelligencePanel({ profile, generationId }: { profile: {
             </div>
             <div>
               <Subheading>Who they serve</Subheading>
-              {product?.buyerSegments.length ? (
+              {product?.buyerSegments?.length ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   {product.buyerSegments.slice(0, 4).map((segment) => <div key={`${segment.name}-${segment.url || ""}`}><a href={segment.url || segment.evidence[0]?.sourceUrl || "#"} target="_blank" rel="noreferrer" style={{ color: "rgba(255,255,255,0.84)", fontSize: 12, fontWeight: 650, textDecoration: "none" }}>{segment.name}</a><EvidenceLinks items={segment.evidence} />{segment.summary && <div style={{ color: "rgba(255,255,255,0.48)", fontSize: 11, lineHeight: 1.5, marginTop: 3 }}>{segment.summary}</div>}</div>)}
                 </div>

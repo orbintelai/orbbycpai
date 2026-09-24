@@ -4,6 +4,7 @@ import { signOut } from "next-auth/react";
 import Image from "next/image";
 import { CompanyIntelligencePanel, WhatChangedPanel } from "./CompanyIntelligencePanel";
 import type { CompanyIntelligence } from "@/lib/intelligence/types";
+import { splitSseMessages, sseDataLine } from "@/lib/comparison/sse";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -621,9 +622,9 @@ function ComparisonTab({ primaryUrl, primaryGenerationId }: { primaryUrl: string
       while (true) {
         const { value, done } = await reader.read(); if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        const messages = buffer.split("\\n\\n"); buffer = messages.pop() || "";
-        for (const message of messages) {
-          const dataLine = message.split("\\n").find((line) => line.startsWith("data: "));
+        const parsed = splitSseMessages(buffer); buffer = parsed.remainder;
+        for (const message of parsed.messages) {
+          const dataLine = sseDataLine(message);
           if (!dataLine) continue;
           const event = JSON.parse(dataLine.slice(6)) as ComparisonStreamEvent;
           if (event.type === "error") throw new Error(event.error || "Comparison failed");
